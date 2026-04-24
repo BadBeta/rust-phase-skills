@@ -85,7 +85,55 @@ Matching elixir pattern: each skill dir copied to `~/.claude/skills/<skill-name>
 ## Work plan
 
 1. Skeleton + this plan (done)
-2. Three SKILL.md hubs (parallel)
-3. Subskill migration from existing rust-programming (parallel, lift-and-shift where possible)
+2. Three SKILL.md hubs (sequential, hand-authored)
+3. Subskill migration from existing rust-programming (hand-authored, file by file)
 4. New authoring: debugging-playbook, security-audit, refactor-templates, test-quality-review
 5. Deploy + commit
+
+## Ground rules
+
+- **No agents for authoring.** Research via agents is OK; content generation is hand-authored.
+- **Preserve all content.** Every rule, BAD/GOOD pair, decision table, code example, and explanation from the old skill must land somewhere in the new skill family. Restructuring is lossless.
+- **No hurry.** Multi-session work is expected. Commit after each logical milestone.
+
+## Source-file coverage tracker
+
+Track every source file through its migration so nothing is dropped.
+
+| Source file | Lines | Status | Destination(s) |
+|---|---|---|---|
+| SKILL.md | 2714 | pending | rust-implementing/SKILL.md (trimmed core) + split of Testing Essentials, Profiling & Performance, Related Skills |
+| architecture.md | 3036 | pending | rust-planning/SKILL.md (planning workflow, rules, decision tables) + rust-planning/architecture-patterns.md (hexagonal, DDD, facade, growing architecture) + rust-planning/workspace-layout.md (workspaces, feature flags) |
+| architecture-examples.md | 2662 | pending | rust-implementing/architecture-examples.md (lift-and-shift) + cross-linked from planning |
+| async-concurrency.md | 3694 | pending | rust-planning/async-strategy.md (sync-vs-async, runtime choice, actor-vs-channels) + rust-implementing/async-patterns.md (code patterns) + rust-reviewing/debugging-playbook.md (deadlock, mailbox buildup) |
+| cli-tools.md | 1784 | pending | rust-implementing/cli-tools.md (lift-and-shift) |
+| database.md | 1506 | pending | rust-planning/data-strategy.md (store choice, migrations) + rust-implementing/database.md (queries, connection pools) |
+| data-structures.md | 2541 | pending | rust-implementing/data-structures.md (collections, algorithms) + rust-reviewing/profiling-playbook.md (benchmarking, flamegraph) + rust-reviewing/performance-catalog.md |
+| deployment.md | 2322 | pending | rust-planning/deployment-strategy.md (profile choices, CI architecture) + rust-implementing/observability.md (tracing, metrics) + rust-reviewing/profiling-playbook.md |
+| documentation.md | 708 | pending | rust-implementing/documentation.md (lift-and-shift) |
+| domain-patterns.md | 2633 | pending | rust-planning/domain-patterns.md (lift-and-shift with minor reframing) |
+| error-handling.md | 1512 | pending | rust-planning/error-strategy.md (error boundaries, layer translation strategy) + rust-implementing/error-handling.md (derive patterns, `?`, context) |
+| gui-wasm.md | 1346 | pending | rust-implementing/gui-wasm.md (lift-and-shift) |
+| language-patterns.md | 2294 | pending | rust-implementing/language-patterns.md (lift-and-shift) |
+| macros.md | 1845 | pending | rust-implementing/macros.md (lift-and-shift) |
+| quick-reference.md | 1937 | pending | rust-implementing/quick-reference.md (lift-and-shift) |
+| serde-serialization.md | 1055 | pending | rust-implementing/serde-patterns.md (lift-and-shift) |
+| services.md | 3544 | pending | rust-planning/services-architecture.md (microservices, kernel, resilience) + rust-planning/distributed-rust.md (TCP, TLS, service discovery) |
+| skill-production-references.md | 249 | pending | rust-reviewing/anti-patterns-catalog.md (evidence-based rule challenges) |
+| testing.md | 3340 | pending | rust-planning/test-strategy.md (test pyramid, mocking strategy, CI) + rust-implementing/testing-patterns.md (cargo test, mockall, insta, proptest, TDD templates) + rust-reviewing/test-quality-review.md (reviewing test quality) |
+| type-system.md | 2115 | pending | rust-implementing/type-system.md (lift-and-shift) |
+| unsafe-ffi.md | 2601 | pending | rust-planning/unsafe-strategy.md (when unsafe is justified) + rust-implementing/ffi-patterns.md (code patterns, bindgen/cbindgen) |
+
+**Coverage goal:** Sum of new skill line counts ≥ sum of old skill line counts. Cross-reference each migrated section.
+
+## New authoring (not from source)
+
+| New file | Scope |
+|---|---|
+| rust-planning/SKILL.md | Planning workflow, rules for architecting, master planning decision table |
+| rust-implementing/SKILL.md | Implementing rules, master "which construct?" decision table, TDD workflow |
+| rust-reviewing/SKILL.md | Three modes (review/debug/profile), workflows, severity, checklists |
+| rust-reviewing/debugging-playbook.md | Symptom→tool flow: panic, OOM, deadlock, slow async, flaky test, UB, Miri findings |
+| rust-reviewing/security-audit.md | Input validation, crypto, unsafe audit, cargo-audit, dependency hygiene |
+| rust-reviewing/refactor-templates.md | Common before/after: Arc<Mutex>→channels, Box<dyn>→enum, etc. |
+| rust-reviewing/test-quality-review.md | Flaky tests, brittle tests, mocking mistakes, coverage gaps |
