@@ -108,6 +108,7 @@ The trait is designed by the caller's need, not dictated by the implementor's co
 | Recorded HTTP interactions | **vcr** (record-and-replay) | External APIs in integration tests |
 | Parametrized (table-driven) tests | **rstest** | `#[case]`/`#[values(...)]` generating one cargo-test per case (nushell pattern) |
 | Prettier `assert_eq!` diffs | **pretty_assertions** | Large-struct diffs in test output |
+| CLI stdout/stderr/filesystem snapshots | **snapbox** | Cargo migrated its test suite from bespoke assertions to snapbox; supports SVG snapshots for terminal-styled output. Use for CLI tools where you want assertions against complete stdout/stderr/directory state. |
 
 **Rule:** mock boundaries, not internals. Mocking a module's private function means you're testing implementation, not behavior.
 
@@ -236,6 +237,13 @@ fn main() {
     conn.send("hello");  //~ ERROR expected `Connected`, found `Disconnected`
 }
 ```
+
+**Two placement patterns:**
+
+1. **In-crate** (common, lighter-weight): `tests/trybuild.rs` + `tests/compile-fail/*.rs` within the crate being tested.
+2. **Dedicated compile-fail crate** (Bevy pattern): separate crate like `crates/bevy_derive/compile_fail/` that depends on the crate being tested. Bevy uses this for `bevy_derive`, `bevy_ecs`, `bevy_reflect` — each has its own `compile_fail/` sub-crate. Advantages: compile-fail test build doesn't clutter the main crate's test output; can enforce specific `Cargo.toml` configurations; integrates cleanly with workspace CI that tests each crate independently.
+
+Choose the in-crate placement for simple cases; promote to a dedicated compile-fail crate when the number or complexity of negative tests justifies the separation.
 
 ## Decision 9 — Concurrency testing
 

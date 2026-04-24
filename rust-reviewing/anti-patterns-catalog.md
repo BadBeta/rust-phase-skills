@@ -364,6 +364,54 @@ Validated against [gfx-rs/wgpu](https://github.com/gfx-rs/wgpu) — WebGPU-spec 
 
 ---
 
+## Validation pass 6 (2026-04-24) — Cargo (Rust-team tooling) + Bevy (ECS game engine)
+
+Two new domains validated: **cargo** (the Rust package manager itself, written by the Rust team) and **Bevy** (ECS game engine, 200+ member workspace).
+
+### Cargo findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| MSRV declared at workspace level | cargo root: `rust-version = "1.92"` workspace; `rust-version = "1.95"` on the main `cargo` crate | **New nuance:** MSRV split — workspace floor for downstream consumption vs. per-package requirement. Added to workspace-layout.md. |
+| Edition 2024 adoption by Rust team code | cargo is on edition 2024 | Confirmed |
+| Lint strategy alternative: noise-floor + specific denies | cargo uses `clippy::all = "allow"` + `clippy::correctness = "warn"` + specific denies (`dbg_macro`, `disallowed_methods`, `disallowed_types`, `print_stdout`, `print_stderr`, `self_named_module_files`) | **New pattern** added to workspace-layout.md as an alternative to the "extensive curated warn list" (rustls) and "aggressive deny" (nushell) patterns. This is a third model: start from allow-all-noise, add back only deliberate signals. |
+| `print_stdout` / `print_stderr` denied via workspace lint | Cargo is a CLI tool but routes all output through a shell/formatter layer; lint-enforces the boundary | **New pattern** documented in workspace-layout.md — lint-as-architectural-boundary for CLI tools |
+| thiserror + anyhow + snapbox all present | cargo workspace.dependencies | Confirmed |
+| snapbox for CLI snapshot testing | Cargo is actively migrating from bespoke assertions to snapbox (PRs #13980, #14031, #14242, #14402, #14642); now supports SVG snapshots for terminal-styled output | **New testing tool** added to test-strategy.md alongside insta — snapbox is CLI-focused with stdout/stderr/filesystem snapshot support. |
+| `gix` + `git2` coexistence | Cargo uses both `gix` (pure-Rust git) and `git2` (libgit2) — pattern: gradual migration with both alternatives alive | **Pattern worth knowing** — "parallel implementations during migration" — but not worth a separate section. |
+| Credential helpers split per platform | `cargo-credential-libsecret` (Linux), `-macos-keychain` (macOS), `-wincred` (Windows) as separate crates | Confirmed "split by platform/dependency surface" — already documented indirectly. |
+| HTTP transport as mutually-exclusive feature | `http-transport-curl` vs `http-transport-reqwest` | Classic adapter-via-feature pattern — already documented. |
+
+### Bevy findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Workspace-level `unsafe_code = "deny"` with per-crate opt-in | Bevy's `[workspace.lints.rust]` has `unsafe_code = "deny"`; specific crates add `#[allow(unsafe_code)]` where needed | **New pattern** contrasting with rustls's per-crate `#![forbid(unsafe_code)]`. `forbid` is absolute; `deny` + `allow` is escapable. Documented in unsafe-strategy.md. |
+| `undocumented_unsafe_blocks = "warn"` enforces SAFETY comments | Clippy lint in Bevy's workspace.lints.clippy | Confirmed — Bevy is a great scale example (200+ crates with enforced SAFETY discipline). |
+| Compile-fail tests as dedicated workspace crates | `crates/bevy_derive/compile_fail`, `crates/bevy_ecs/compile_fail`, `crates/bevy_reflect/compile_fail` | **New placement pattern** documented in test-strategy.md as alternative to in-crate `tests/trybuild.rs`. |
+| ~200+ features, hierarchical (profiles / collections / granular) | Bevy features include `2d`, `3d`, `ui` (profiles), `default_app`, `common_api` (collections), `bevy_animation`, `bevy_gltf` (granular); delegate to `bevy_internal` | Third feature-architecture pattern after nushell's tiered and ripgrep's facade. Already documented generally. |
+| Custom async primitives instead of tokio/smol | `futures-lite` + `event-listener` + `futures-timer` | **Another data point** for "GUI/game apps use custom runtimes" — aligns with Zed findings. Game/sim/editor domain pattern: async primitives without a full runtime, driven by the game loop. |
+| No workspace.dependencies | Bevy places deps per-crate rather than centralizing | **Contrast** to my recommendation: centralizing via `[workspace.dependencies]` is recommended but not universal. Bevy's 200+ crates with varied feature sets may justify decentralization. Data point, not a rule change. |
+| ECS architectural paradigm | Bevy's core pattern: World (data) + Entities + Components + Systems + Queries + Archetypes | **New section** added to rust-planning/SKILL.md §16 "Architectural Paradigms Not Covered Here" — noting that ECS, actor-model frameworks, and reactive GUI DSLs have their own architectural rules that supersede the generic trait-based patterns in this skill. |
+| Edition 2024, MSRV 1.95 | Confirmed | Consistent with cargo's main-package MSRV. |
+
+### Updates applied after pass 6
+
+1. **workspace-layout.md** — added: (a) MSRV split pattern (workspace vs package); (b) cargo's lint-strategy alternative (`all = "allow"` + `correctness = "warn"` + specific denies); (c) `print_stdout`/`print_stderr` lint-as-boundary pattern for CLI tools; (d) note on Bevy's workspace `unsafe_code = "deny"` vs per-crate `forbid` alongside the existing examples.
+2. **unsafe-strategy.md** — added section contrasting `forbid(unsafe_code)` (absolute, rustls) vs workspace `deny` + per-crate `allow` (escapable, Bevy).
+3. **test-strategy.md** — added: (a) `snapbox` for CLI stdout/stderr/filesystem snapshots, with note about cargo's ongoing migration; (b) compile-fail crate placement patterns (in-crate vs dedicated workspace-member crate, Bevy pattern).
+4. **rust-planning/SKILL.md §16** — NEW section "Architectural Paradigms Not Covered Here" acknowledging ECS (Bevy, hecs, specs), actor-model frameworks (Actix, Ractor), and declarative GUI DSLs (Leptos, Dioxus, Yew) as paradigms where the skill's generic rules don't fully apply. Tells users to load the ecosystem's docs first and use this skill only for non-paradigm parts (error handling, async, testing, workspace layout).
+
+### Pass 6 sources
+- [rust-lang/cargo](https://github.com/rust-lang/cargo) — root `Cargo.toml`; MSRV split, lint strategy, snapbox migration
+- [bevyengine/bevy](https://github.com/bevyengine/bevy) — root `Cargo.toml`; workspace `unsafe_code = "deny"`, compile-fail crates, feature architecture
+- [assert-rs/snapbox](https://github.com/assert-rs/snapbox) — CLI snapshot testing toolbox
+- [Cargo PR #13980 et al.](https://github.com/rust-lang/cargo/pull/13980) — cargo's migration from bespoke assertions to snapbox
+- [Bevy ECS docs](https://bevy.org/learn/quick-start/getting-started/ecs/) — World / Entity / Component / System primer
+- [Inside Rust Blog — Cargo 1.78 cycle](https://blog.rust-lang.org/inside-rust/2024/03/26/this-development-cycle-in-cargo-1.78/) — snapbox SVG snapshots for styled terminal output
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).

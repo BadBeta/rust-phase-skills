@@ -59,6 +59,14 @@ type_complexity = "allow"
 # std_instead_of_core = "warn"       # bans `std::` imports in no_std crates
 # clippy::exhaustive_enums = "warn"  # demands #[non_exhaustive] on public enums
 # clippy::exhaustive_structs = "warn" # demands #[non_exhaustive] on public structs
+# CLI-app output boundary (cargo pattern): route all user output through a
+# formatter layer rather than println!/eprintln!.
+# print_stdout = "warn"
+# print_stderr = "warn"
+# Game/engine example (Bevy): deny unsafe workspace-wide with per-crate opt-in
+# (bevy uses `[workspace.lints.rust] unsafe_code = "deny"`, then individual
+# crates add `#[allow(unsafe_code)]` where needed. Different from rustls's
+# per-crate `#![forbid(unsafe_code)]` — deny+allow is escapable, forbid is not.)
 
 # Workspace may patch itself (rustls pattern) — ensures downstream ecosystem
 # crates that depend on `rustls` via crates.io actually use THIS workspace's
@@ -271,6 +279,7 @@ In a workspace, crate boundaries give you an additional enforceable layer. `pub(
 - **`edition`** is per-crate. New crates should use `edition = "2024"`. Older crates on `edition = "2021"` can coexist; `edition` affects syntax / resolver per-crate.
 - **`rust-version`** (MSRV) is per-crate. In a workspace, the MSRV of the whole distribution is the max of individual crate MSRVs.
 - **CI must test MSRV.** Use a matrix: `rust: [stable, 1.85]` (or whatever your MSRV is). Otherwise drift is invisible.
+- **MSRV split (cargo pattern):** cargo declares `rust-version = "1.92"` at workspace level but `rust-version = "1.95"` on the main `cargo` binary itself. The workspace floor is what downstream consumers see; the main package can require newer. Use this split when some workspace crates are consumed externally (lower MSRV for adoption) while the application binary can use newer features.
 
 ## Growing path
 

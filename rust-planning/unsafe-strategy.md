@@ -45,6 +45,13 @@ The cleanest pattern: forbid unsafe in the crate entirely and delegate unsafety 
 
 Rustls delegates cryptographic primitives (which do need unsafe for performance / FFI) to provider crates like `aws-lc-rs` and `ring`. The TLS protocol logic stays in safe Rust; the unsafe surface is isolated to externally-audited crypto implementations.
 
+**Workspace-level deny + per-crate allow (Bevy pattern):** for a workspace where most crates are safe but a few specific ones need unsafe, set `unsafe_code = "deny"` in `[workspace.lints.rust]` and let specific crates opt back in with `#[allow(unsafe_code)]`. This is different from `#![forbid(unsafe_code)]`:
+
+- **`forbid`** cannot be overridden — even `#[allow(unsafe_code)]` inside the crate won't re-enable unsafe. Absolute commitment.
+- **`deny`** can be escaped with `#[allow(unsafe_code)]`. Default commitment with documented exceptions.
+
+Pick `forbid` per-crate when "no unsafe, ever, in this crate" is a design invariant. Pick workspace-level `deny` when you want a workspace-wide safety default with explicit opt-in for the few crates that need it. Bevy uses the second approach across 200+ member crates.
+
 **When this works:**
 - Pure algorithmic / protocol / state-machine code
 - Library where callers need strong safety guarantees

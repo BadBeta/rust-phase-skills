@@ -1040,7 +1040,19 @@ Anti-patterns specific to **architectural decisions**. For implementation-level 
 
 ---
 
-## 16. Related Skills
+## 16. Architectural Paradigms Not Covered Here
+
+This skill assumes conventional application / service / library architectures with traits, generics, and the type system as the primary organizing mechanisms. A handful of domains use fundamentally different paradigms where this skill's rules apply only partially:
+
+- **Entity-Component-System (ECS)** for games and simulations (Bevy, hecs, specs). State lives in a `World`; components are data; systems are functions that query. Archetypes group entities with identical component sets for cache efficiency. Dependency inversion, "traits as ports," and hexagonal layering don't apply the same way — the ECS framework IS the architecture, and your job is authoring systems and components. If you're building on Bevy, lean on Bevy's documentation first; use this skill for the non-ECS parts (error handling, async, testing, workspace layout).
+- **Actor-model frameworks** (Actix, Ractor) have their own architectural rules — messages, addresses, supervisors — that supersede the generic "dependency-inject via trait" pattern.
+- **Declarative GUI DSLs** (Leptos, Dioxus, Yew) use a signal/reactive model. Same story: framework-specific patterns take precedence.
+
+For these, load the relevant ecosystem documentation alongside this skill rather than treating this skill as authoritative for their paradigm.
+
+---
+
+## 17. Related Skills
 
 - **[rust-implementing](../rust-implementing/SKILL.md)** — The moment of writing code. Decision tables for `?` vs `match`, `impl Trait` vs `dyn Trait`, `Arc<Mutex>` vs channels. Idiomatic templates. TDD workflow. Anti-patterns Claude commonly produces.
 - **[rust-reviewing](../rust-reviewing/SKILL.md)** — Reviewing PRs, debugging bugs (panics, OOM, deadlock, UB), profiling (flamegraph, perf, DHAT, tokio-console).
