@@ -211,10 +211,38 @@
 - Replaces lazy_static! and once_cell::sync::Lazy.
 - Clippy issue #12895 recommends std::sync::LazyLock.
 
-### #[non_exhaustive] — VERIFIED
-- axum: `ErrorKind`, `QueryRejection`.
-- tokio-postgres: `SslMode`, `TargetSessionAttrs`.
-- Rust Design Patterns book recommends as "Privacy For Extensibility" idiom.
+### #[non_exhaustive] — PARTIAL (nuanced by library-vs-app-internal)
+- **Published libraries use it:** axum (`ErrorKind`, `QueryRejection`), tokio-postgres (`SslMode`, `TargetSessionAttrs`), serde, tokio.
+- **Application-internal crates often OMIT it deliberately:** Zed's `project::Event`, `CompletionSource`, `LspAction`, `ProjectClientState` all do NOT have `#[non_exhaustive]` — they want pattern-match exhaustiveness to catch "did you handle the new variant?" bugs across the workspace.
+- **Rule:** use `#[non_exhaustive]` on public enums of **published libraries** (where external callers would break on a new variant); omit it in application-internal workspace crates where exhaustive matching is a feature.
+
+---
+
+## Validation pass 2 (2026-04-24) — Zed editor
+
+Additional evidence collected against `zed-industries/zed` to test the new skill family's claims:
+
+| Claim | Evidence from Zed | Update |
+|---|---|---|
+| Cargo workspace for large apps | 400+ member workspace | Confirmed |
+| `[workspace.lints]` with curated list (not blanket pedantic) | Denies `dbg_macro`, `todo`, `declare_interior_mutable_const`, `redundant_clone`, `disallowed_methods`; allows style rules intentionally | Confirmed — Zed matches the recommended pattern exactly |
+| Edition 2024 for new projects | Workspace uses `edition = "2024"` | Confirmed |
+| `thiserror` for libraries, `anyhow` for apps | Zed's internal app crates (`editor`, `language`, `project`) use `anyhow::Result` pervasively, NOT just in `main.rs`. GPUI (more library-like) uses both thiserror AND anyhow. | **Nuanced:** anyhow extends to internal app crates, not only `main.rs`. Both coexist by role (app vs library), not file location. |
+| `#[non_exhaustive]` on public enums | Zed's `project::Event`, `CompletionSource`, `LspAction` deliberately omit it | **Nuanced:** library-vs-app distinction matters (see above). |
+| Newtype pattern for IDs | Extensive use: `WorktreeId`, `BufferId`, `LanguageServerId`, `ProjectEntryId`, `ReplicaId` | Strongly confirmed |
+| "One runtime per binary" + Tokio default | Zed uses NEITHER Tokio nor smol. It has a **custom runtime** (GPUI's executor) wrapping `async-task` + platform primitives (GCD on macOS). | **Nuanced:** GUI applications frequently pick custom runtimes integrated with UI event loops; the rule "one runtime per binary" still holds, but "Tokio default" applies to headless services, not GUI apps. |
+| Custom profile variants (e.g. `release-fast`) | Zed has `release-fast` variant with reduced optimization for faster iteration | Confirmed |
+| MSRV declaration on libraries | Zed does NOT declare `rust-version` in its workspace | Consistent with guidance (Zed is an end-user app, not a library; MSRV rule was specifically for published libraries) |
+| proptest for property-based testing | Antonio Scandurra at Zed pioneered property testing over async future interleavings to surface concurrency bugs — a strong validation and an extension of the recommendation into the async domain | Strongly confirmed; test-strategy.md updated to reference |
+| mockall for trait-based mocks | Zed uses proptest + criterion + ctor in tests; NO mockall | Note: mockall is one option among several. GUI / state-heavy apps often use integration-test-heavy strategies with proptest instead. |
+| No workspace-level feature flags | Zed configures features per-dependency, not at workspace level | Consistent with guidance that feature flags belong at composition-root level, not scattered |
+
+### Fixes applied after Zed pass
+
+1. **Rust-implementing SKILL.md Rule 5** — `#[non_exhaustive]` now explicitly conditioned on "published library public enums" vs "application-internal workspace crates"
+2. **Rust-planning SKILL.md Rule 18** — `anyhow` framing expanded: applies throughout internal app crates, not only `main.rs`
+3. **async-strategy.md runtime table** — added row for "Custom runtime integrated with UI event loop" (Zed GPUI, egui, iced, Bevy), with the "one runtime per binary" rule updated to note UI runtimes count
+4. **test-strategy.md property-testing section** — added the async-execution-ordering use case (Zed's concurrency-bug-finding technique)
 
 ---
 
@@ -247,3 +275,9 @@
 - [tokio docs — JoinSet](https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html)
 - [axum docs — State management](https://docs.rs/axum/latest/axum/#sharing-state-with-handlers)
 - [crates.io download stats](https://crates.io/)
+
+### Validation pass 2 (Zed, 2026-04-24)
+- [zed-industries/zed](https://github.com/zed-industries/zed) — root `Cargo.toml`, `crates/gpui/Cargo.toml`, `crates/editor/Cargo.toml`, `crates/project/src/project.rs`, `crates/language/src/language.rs`
+- [Zed blog — Async Rust (Zed Decoded)](https://zed.dev/blog/zed-decoded-async-rust) — custom GPUI runtime rationale
+- [GPUI README](https://github.com/zed-industries/zed/blob/main/crates/gpui/README.md)
+- Antonio Scandurra's property-based concurrency testing talk (Zed engineering)

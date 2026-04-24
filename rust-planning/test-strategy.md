@@ -118,6 +118,7 @@ Property tests generate many inputs and verify an invariant holds for all of the
 - **State machines**: any valid sequence of transitions leaves the FSM in a valid state
 - **Arithmetic on newtypes**: associativity, commutativity, identity
 - **Pure functions with invariants**: sort is idempotent, reverse is involutive, etc.
+- **Async execution ordering**: property tests over *future interleavings* catch concurrency bugs that are otherwise nearly impossible to reproduce. Antonio Scandurra's work on Zed used `proptest` over permutations of async future orderings to surface race conditions — a strong template for testing any complex async state machine.
 
 ```rust
 proptest! {

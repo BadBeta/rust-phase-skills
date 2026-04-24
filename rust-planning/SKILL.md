@@ -97,7 +97,7 @@ These rules consolidate 10 architectural principles + 17 decision rules + planni
 
 ### Error strategy
 
-18. **PREFER `thiserror` for library error types and `anyhow` (or `color-eyre`/`miette`) for application error handling.** `thiserror` gives typed errors downstream callers can match on; `anyhow` gives ergonomic context chaining for main-level code. `miette` for user-facing diagnostic quality.
+18. **PREFER `thiserror` for published-library error types and `anyhow` (or `color-eyre`/`miette`) for application error handling.** `thiserror` gives typed errors downstream callers can pattern-match on; use it for crates you publish to crates.io or that cross organizational boundaries. `anyhow` is ergonomic for **application code broadly — not only `main.rs` but throughout internal workspace crates** (Zed uses `anyhow::Result` throughout `editor`, `language`, `project` — all internal but not meant to be reusable libraries). The two coexist: use `anyhow` for the app, `thiserror` for any embedded sub-libraries you may spin off. `miette` for user-facing diagnostic quality.
 19. **NEVER use `Box<dyn Error>` in public library APIs.** Define typed error enums so callers can match on variants. `Box<dyn Error>` loses information and breaks pattern matching.
 20. **NEVER use `String` for error messages in `Result`.** Typed errors (`Result<T, MyError>`) let callers match on variants and recover programmatically. String errors lose information and prevent programmatic handling.
 21. **CONSIDER hand-rolled `impl Display + impl Error` with `Error { kind: ErrorKind }` wrappers** for top-tier libraries — ripgrep, tokio, hyper, and serde all take this approach. It gives full control over formatting, `#[non_exhaustive]`, and display patterns beyond what `thiserror` enables.
@@ -796,7 +796,7 @@ See `async-strategy.md` for full treatment. Planning-level decisions:
 | `monoio` / `glommio` | io_uring-based, single-threaded-per-core, Linux-only high-performance servers |
 | `embassy` | Embedded (no_std), bare-metal microcontrollers |
 
-**Rule:** one runtime per binary. Never mix Tokio + async-std in the same process — their reactors don't share.
+**Rule:** one runtime per binary. Never mix Tokio + async-std in the same process — their reactors don't share. GUI apps with custom runtimes (Zed/GPUI wrapping `async-task` + platform primitives, egui, iced) count as "one runtime" — the UI executor IS the runtime; don't try to spawn Tokio tasks on it.
 
 ### 10.3 Task topology
 

@@ -29,11 +29,12 @@ One runtime per binary. Don't mix. Tokio + async-std in the same process have in
 
 | Runtime | When to choose | Trade-offs |
 |---|---|---|
-| **Tokio** (default) | Web services, databases, most async code | Huge ecosystem; `axum`, `sqlx`, `reqwest`, `tonic` integrate natively. Slight binary size / compile-time overhead. |
+| **Tokio** (default for headless) | Web services, databases, most async server code | Huge ecosystem; `axum`, `sqlx`, `reqwest`, `tonic` integrate natively. Slight binary size / compile-time overhead. |
 | `smol` | Small/embedded, minimal deps, want `async-std`-like API | Smaller footprint, less mature ecosystem. **Upstream recommendation for projects moving off `async-std`.** |
 | `async-std` | **Discontinued** as of March 2025 (v1.13.1 was the final release) | Do not use for new projects. Migrate existing code to Tokio or smol. |
 | `monoio` / `glommio` | io_uring, single-threaded-per-core, Linux-only HPC | Highest performance for specific workloads; smaller ecosystem |
 | `embassy` | Embedded, `no_std`, bare-metal MCU | MCU-specific; different execution model |
+| **Custom runtime integrated with a UI event loop** | GUI apps where async work must coordinate with the main thread | Zed's GPUI uses `async-task` wrapping platform primitives (GCD on macOS); egui/iced drive their own executors; Bevy uses its own task pools. Don't try to force Tokio into a GUI's main thread. |
 
 ### Tokio flavor (single-threaded vs multi-threaded)
 
