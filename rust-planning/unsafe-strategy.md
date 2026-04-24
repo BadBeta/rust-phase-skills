@@ -32,6 +32,26 @@ If unsafe is allowed in this crate:
 - **Every `unsafe` block has `// SAFETY:` comment** explaining why invariants are upheld. No exceptions.
 - **Minimize unsafe blocks' size.** One `unsafe { ... }` per logical operation, not one around a whole function.
 
+### `#![forbid(unsafe_code)]` — the strongest isolation
+
+The cleanest pattern: forbid unsafe in the crate entirely and delegate unsafety to dedicated provider crates. rustls does this for a security-critical TLS library:
+
+```rust
+// rustls/src/lib.rs — TOP of the crate
+#![no_std]
+#![forbid(unsafe_code, unused_must_use)]
+#![warn(missing_docs, clippy::exhaustive_enums, clippy::exhaustive_structs)]
+```
+
+Rustls delegates cryptographic primitives (which do need unsafe for performance / FFI) to provider crates like `aws-lc-rs` and `ring`. The TLS protocol logic stays in safe Rust; the unsafe surface is isolated to externally-audited crypto implementations.
+
+**When this works:**
+- Pure algorithmic / protocol / state-machine code
+- Library where callers need strong safety guarantees
+- Projects where unsafety can be pushed into well-audited providers (crypto, system calls, raw hardware)
+
+The `clippy::exhaustive_enums` + `clippy::exhaustive_structs` pair is worth adopting too in libraries: they demand `#[non_exhaustive]` on every public enum/struct, turning extensibility discipline into a compile-time lint check.
+
 ### The invariant contract
 
 Every `unsafe fn` has preconditions that make calling it safe. Document these in `# Safety`:

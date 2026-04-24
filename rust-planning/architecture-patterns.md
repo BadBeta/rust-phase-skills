@@ -3024,6 +3024,49 @@ Fast, no side effects                  Build derived objects (matchers,
 
 **ripgrep's 58-field `HiArgs` struct** is built from `LowArgs` through extensive heuristic application: terminal detection adjusts color defaults, thread count optimizes based on path count, memory-mapping strategy adapts to file count, and conflicting flags are resolved with documented precedence rules.
 
+## Process-Level Default + Constructor Injection (rustls pattern)
+
+The general guidance in [SKILL.md §1 Rule 14](SKILL.md) is to avoid global mutable state and inject dependencies via constructors. Rustls demonstrates a **pragmatic, documented exception** worth understanding: a singleton that's set once at startup with both a global accessor AND constructor injection available.
+
+rustls's cryptographic primitives (`CryptoProvider`) can be configured two ways:
+
+1. **Constructor injection (primary):** pass the provider explicitly into `ClientConfig::builder().with_crypto_provider(...)` or `ServerConfig::builder()`.
+2. **Process-level default (convenience):** `CryptoProvider::install_default(provider)` stores it in `static PROCESS_DEFAULT_PROVIDER: OnceLock<Arc<CryptoProvider>>`. Later callers retrieve via `CryptoProvider::get_default()`.
+
+```rust
+use std::sync::{Arc, OnceLock};
+
+static PROCESS_DEFAULT_PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
+
+impl CryptoProvider {
+    pub fn install_default(self) -> Result<(), Arc<Self>> {
+        PROCESS_DEFAULT_PROVIDER.set(Arc::new(self))
+    }
+
+    pub fn get_default() -> Option<&'static Arc<CryptoProvider>> {
+        PROCESS_DEFAULT_PROVIDER.get()
+    }
+}
+```
+
+**Why this is OK despite the general "no global state" rule:**
+- `OnceLock`, not `Mutex` — set exactly once; after that, read-only. Not mutable state.
+- Explicit — callers must call `install_default`; nothing happens silently.
+- Both paths coexist — apps that want simple do `install_default`; tests / libraries / multi-tenant hosts use `with_crypto_provider` and never touch the global.
+- Convenience for the common "one provider per process" case without forcing every downstream library to thread the provider through call chains.
+
+**When this pattern is appropriate:**
+- The thing is conceptually singleton per process (crypto provider, allocator, tracing subscriber, global config snapshot)
+- Set once at startup (not mutated at runtime)
+- Constructor injection is ALSO exposed for code that needs it (testing, multi-tenant)
+
+**When the general rule still applies:**
+- Mutable state shared across callers → `Arc<Mutex<T>>` + injection
+- Services with multiple instances per process (auth, billing) → each injected
+- Anything where testability needs swappable impls → constructor injection only; don't add a `install_default`-style backdoor
+
+Confused with global mutable state: no. `LazyLock<Mutex<T>>` for mutable services is still an anti-pattern; `OnceLock<Arc<T>>` for a startup-set-once singleton with dual injection paths is not.
+
 ## Related Skills
 
 - **[SKILL.md](SKILL.md)** — Core Rust: ownership, traits, modules, cargo features, API design

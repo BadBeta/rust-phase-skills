@@ -54,6 +54,17 @@ unwrap_used = "warn"         # Catch unwraps; override per-module where needed
 type_complexity = "allow"
 # Aggressive project example: nushell sets `unwrap_used = "deny"` at workspace
 # level (CI fails on any unwrap). This pairs with #[cfg(test)] overrides.
+# Library/no_std example (rustls): enforces no_std discipline at workspace level
+# alloc_instead_of_core = "warn"    # bans `alloc::Vec` in favor of `alloc::`-free core
+# std_instead_of_core = "warn"       # bans `std::` imports in no_std crates
+# clippy::exhaustive_enums = "warn"  # demands #[non_exhaustive] on public enums
+# clippy::exhaustive_structs = "warn" # demands #[non_exhaustive] on public structs
+
+# Workspace may patch itself (rustls pattern) — ensures downstream ecosystem
+# crates that depend on `rustls` via crates.io actually use THIS workspace's
+# local copy during development.
+[patch.crates-io]
+# rustls = { path = "rustls" }
 
 # Common profiles
 [profile.release]

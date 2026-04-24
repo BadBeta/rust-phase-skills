@@ -291,6 +291,44 @@ Additional evidence collected against `zed-industries/zed` to test the new skill
 
 ---
 
+## Validation pass 4 (2026-04-24) — Rustls (security-critical library)
+
+Validation against [rustls/rustls](https://github.com/rustls/rustls) — pure-Rust TLS 1.2/1.3 library with strong safety requirements, 15-member workspace, published on crates.io with significant downstream usage.
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Libraries use `#[non_exhaustive]` on public enums | `rustls::Error` and every sub-enum (`InvalidMessage`, `PeerIncompatible`, `PeerMisbehaved`, `CertificateError`, etc.) is marked `#[non_exhaustive]` | **Strongly confirmed** for published libraries |
+| Hand-rolled `impl Error + Display` for top-tier libs | `rustls::Error` — 22 variants, manual impls (not thiserror) | Confirmed; rustls added to the hand-rolled-error list (ripgrep, tokio, hyper, serde, polars, rustls) |
+| Hierarchical enum-of-enums for rich error domains | `Error` carries sub-enums: `InvalidMessage`, `PeerMisbehaved`, `CertificateError`. Top-level has 22 variants; sub-enums have 30-50 each | **New pattern documented** in error-strategy.md |
+| `#![forbid(unsafe_code)]` at library crate root | rustls core declares `#![forbid(unsafe_code, unused_must_use)]`; delegates crypto unsafety to aws-lc-rs/ring provider crates | **Strongly confirmed;** documented in unsafe-strategy.md as "strongest isolation" pattern |
+| `clippy::exhaustive_enums` / `clippy::exhaustive_structs` | rustls declares `#![warn(missing_docs, clippy::exhaustive_enums, clippy::exhaustive_structs)]` — clippy enforces `#[non_exhaustive]` discipline | **New pattern documented** in unsafe-strategy.md and workspace-layout.md |
+| Process-level singleton with explicit install + constructor-injection fallback | `OnceLock<Arc<CryptoProvider>>` with `install_default()`/`get_default()`; ALSO `ClientConfig::builder().with_crypto_provider(...)` for explicit injection | **New pattern documented** as a pragmatic exception in architecture-patterns.md |
+| `[workspace.lints]` with extensive curated list | rustls warns on `elided_lifetimes_in_paths`, `unnameable_types`, `unreachable_pub`, `unused_extern_crates`, `cloned_instead_of_copied`, `manual_let_else`, `needless_pass_by_ref_mut`, `or_fun_call`, `redundant_clone`, `use_self`, etc. | Confirmed; even stricter than nushell |
+| no_std enforcement via workspace lints | `alloc_instead_of_core = "warn"`, `std_instead_of_core = "warn"` | **New pattern documented** in workspace-layout.md |
+| no_std library with `extern crate alloc` | rustls is `#![no_std]` + uses `alloc` | Confirmed; TLS protocol is pure state machine, no stdlib needed |
+| MSRV declared for published library | `rust-version = "1.85"` in rustls/Cargo.toml | Confirmed |
+| `autotests = false, autobenches = false` | rustls/Cargo.toml disables auto-discovery | **New pattern** — worth noting for libraries with hand-curated test/bench layouts |
+| `[patch.crates-io]` self-patching | rustls workspace patches itself so ecosystem crates depending on rustls via crates.io use the local copy | **New pattern documented** in workspace-layout.md |
+| Pluggable crypto provider via feature flags | `ring` vs `aws-lc-rs` vs `fips` as compile-time choices | Confirmed; classic feature-flag-for-adapter-choice pattern |
+| `zeroize` + `subtle` for crypto primitives | rustls workspace deps include both | Confirmed match for security-audit.md guidance |
+| `CryptoProvider` as composition of trait objects (not trait) | `CryptoProvider { secure_random: &'static dyn SecureRandom, key_provider: &'static dyn KeyProvider, ... }` — struct holding trait objects | **Interesting pattern:** a "bag of capabilities" struct rather than a monolithic trait. Good when the capabilities are independent and swapping them independently is valuable. |
+
+### Fixes applied after pass 4
+
+1. **error-strategy.md** — added hierarchical enum-of-enums pattern (rustls), with `#![warn(clippy::exhaustive_enums)]` as the discipline enforcement
+2. **unsafe-strategy.md** — new section on `#![forbid(unsafe_code)]` as "strongest isolation" with rustls as the canonical example; delegation to provider crates explained
+3. **workspace-layout.md** — added no_std enforcement lints (`alloc_instead_of_core`, `std_instead_of_core`), `clippy::exhaustive_*` lints, and `[patch.crates-io]` self-patch pattern
+4. **architecture-patterns.md** — added "Process-Level Default + Constructor Injection" as a documented exception to the "no global state" rule; conditions for when this pattern is appropriate
+5. **Added rustls to hand-rolled-error list**
+
+### Validation pass 4 sources
+- [rustls/rustls](https://github.com/rustls/rustls) — root `Cargo.toml`, `rustls/Cargo.toml`, `rustls/src/lib.rs`, `rustls/src/crypto/mod.rs`
+- [rustls docs — Error enum](https://docs.rs/rustls/latest/rustls/enum.Error.html)
+- [rustls docs — InvalidMessage](https://docs.rs/rustls/latest/rustls/enum.InvalidMessage.html) and [PeerMisbehaved](https://docs.rs/rustls/latest/rustls/enum.PeerMisbehaved.html)
+- [rustls website](https://rustls.dev/) — "pure Rust, no unsafe in the protocol core"
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).

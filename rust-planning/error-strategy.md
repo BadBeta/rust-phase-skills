@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-### Hand-rolled pattern (ripgrep, tokio, hyper, serde, polars)
+### Hand-rolled pattern (ripgrep, tokio, hyper, serde, polars, rustls)
 
 For top-tier libraries where every aspect of error representation matters:
 
@@ -116,6 +116,43 @@ pub type PolarsResult<T> = Result<T, PolarsError>;
 ```
 
 Also: polars does NOT use `#[non_exhaustive]` on `PolarsError` — this is deliberate, consistent with the "exhaustive matching is a feature for app-internal callers" principle. Published library + exhaustive enum = explicit decision that the variant set is stable.
+
+### Hierarchical enum-of-enums (rustls)
+
+When the error space has many subcategories (TLS is: "bad message format" OR "peer misbehaved" OR "cert invalid" OR …), a flat 30-variant enum becomes unwieldy. rustls uses a **hierarchical pattern**: top-level `Error` has ~20 variants, and several of those variants carry their own dedicated sub-enums which are ALSO `#[non_exhaustive]`.
+
+```rust
+#[non_exhaustive]
+pub enum Error {
+    InvalidMessage(InvalidMessage),        // sub-enum
+    PeerIncompatible(PeerIncompatible),    // sub-enum
+    PeerMisbehaved(PeerMisbehaved),        // sub-enum
+    AlertReceived(AlertDescription),       // sub-enum
+    InvalidCertificate(CertificateError),  // sub-enum
+    // ... plus structured variants:
+    InappropriateMessage { expect_types: Vec<ContentType>, got_type: ContentType },
+    // ... plus simple variants:
+    NoCertificatesPresented, DecryptError, EncryptError,
+    // ... plus escape hatch:
+    General(String),
+    Other(OtherError),
+}
+
+#[non_exhaustive]
+pub enum InvalidMessage { /* ~30 sub-variants */ }
+
+#[non_exhaustive]
+pub enum PeerMisbehaved { /* ~50 sub-variants */ }
+```
+
+Also notable: rustls documents `PeerMisbehaved` as "callers should NOT branch on these variants — report a bug if you see one." The `#[non_exhaustive]` is doing double duty: it permits future expansion AND reminds callers the variants are not a stable API contract.
+
+**When to use hierarchical:**
+- Domain has clear subcategories (protocol states, compile phases, file formats)
+- Flat enum would exceed ~15 variants
+- Some subcategories are "advisory" (user shouldn't branch on them individually, only on the category)
+
+**Lint pair:** rustls enforces the discipline by setting `#![warn(clippy::exhaustive_enums, clippy::exhaustive_structs)]` at the crate root — clippy then demands `#[non_exhaustive]` on every public enum/struct, preventing accidents.
 
 ### The CLI-app stack: thiserror + miette
 
