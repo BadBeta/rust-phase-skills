@@ -357,6 +357,12 @@ Ten foundational principles. When rules conflict or requirements are ambiguous, 
 
 10. **Keep traits small and focused.** No client should depend on methods it doesn't use. If a function only needs `find()`, don't force it to depend on a trait that also defines `save()`, `delete()`, and `export_csv()`. Split into focused traits (`Find<T>`, `Save<T>`). Compose with trait bounds: `impl Find<Order> + Save<Order>`.
 
+11. **Single source of truth (SSOT).** Every fact about the system lives in exactly one authoritative place. A trait's signature is defined once (in the crate that uses it). A table's schema is owned by one module. An error variant set is declared once. Dependency versions are pinned once via `[workspace.dependencies]`. Magic values are `const` / `static`, not literals repeated across files. Conversions between types use `From`/`Into`/`TryFrom`, defined once per direction — not rewritten at each call site.
+
+    The litmus test: *"if this fact changes, how many files do I have to update?"* The answer should be 1 — or 1-plus-compiler-enforced-callers. If updating a fact means grep-and-replace, the fact isn't single-sourced. Rust makes SSOT easier than most languages: generics state an algorithm once for many types; traits state an interface once; `derive` macros derive `Debug`/`Clone`/`Serialize` from the struct; `build.rs` generates types from a spec file; workspace inheritance shares versions and lint configuration. Reach for these before duplicating.
+
+    SSOT is what most "DRY" guidance is really aiming at — but framed around ownership of a fact rather than mechanical deduplication of code. Two different `From` impls that happen to look similar aren't a violation; two places computing the same tax rate with independent `const` values *are*.
+
 ---
 
 ## 5. Project Layout Decisions
@@ -1408,6 +1414,72 @@ impl DbClient {
         Ok(Self { pool })
     }
 }
+```
+
+### 16. Duplicated business rule across layers (SSOT violation)
+
+```rust
+// BAD: the "order must have at least one line item and total > 0" rule
+// is redeclared in the API validator, the domain constructor, and the
+// DB trigger. Three sources of truth for one fact — they will drift.
+fn validate_api(req: &OrderReq) -> Result<(), ApiError> {
+    if req.items.is_empty() { return Err(ApiError::Empty); }
+    if req.total() <= Decimal::ZERO { return Err(ApiError::ZeroTotal); }
+    Ok(())
+}
+impl Order {
+    pub fn new(items: Vec<LineItem>) -> Result<Self, DomainError> {
+        if items.is_empty() { return Err(DomainError::Empty); }
+        let total: Decimal = items.iter().map(|i| i.price * i.qty).sum();
+        if total <= Decimal::ZERO { return Err(DomainError::ZeroTotal); }
+        Ok(Self { items, total })
+    }
+}
+// plus a CHECK constraint in the migration, easily forgotten when rules change
+```
+
+```rust
+// GOOD: the domain constructor IS the rule. API and DB delegate to it.
+// One place to change when the rule evolves; compiler/constructor enforces
+// that no invalid Order value can exist.
+impl Order {
+    pub fn place(items: Vec<LineItem>) -> Result<Self, OrderError> {
+        if items.is_empty() { return Err(OrderError::Empty); }
+        let total: Decimal = items.iter().map(|i| i.price * i.qty).sum();
+        if total <= Decimal::ZERO { return Err(OrderError::ZeroTotal); }
+        Ok(Self { items, total })
+    }
+}
+// API handler: map OrderError -> ApiError via From.
+// DB layer: inserts are fed from Order values only, which are already valid.
+// Migration CHECK constraint (if kept at all) is a belt-and-braces safety,
+// not the primary source of truth.
+```
+
+### 17. Magic value duplicated as literal across modules (SSOT violation)
+
+```rust
+// BAD: the 30-second request timeout lives as a literal in five places.
+// When the SLA changes to 45s, someone updates two of them and misses three.
+let client = reqwest::Client::builder()
+    .timeout(Duration::from_secs(30)).build()?;
+// and later, in another file:
+tokio::time::timeout(Duration::from_secs(30), db.query("...")).await?;
+// and in a test:
+#[tokio::test] async fn completes_within_budget() {
+    assert!(run().await.duration < Duration::from_secs(30));
+}
+```
+
+```rust
+// GOOD: one const, one place to change, grep-verifiable.
+// domain/timeouts.rs
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+// Everywhere else:
+use domain::timeouts::REQUEST_TIMEOUT;
+let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+tokio::time::timeout(REQUEST_TIMEOUT, db.query("...")).await?;
 ```
 
 ---
