@@ -3024,6 +3024,43 @@ Fast, no side effects                  Build derived objects (matchers,
 
 **ripgrep's 58-field `HiArgs` struct** is built from `LowArgs` through extensive heuristic application: terminal detection adjusts color defaults, thread count optimizes based on path count, memory-mapping strategy adapts to file count, and conflicting flags are resolved with documented precedence rules.
 
+## Protocol-Implementation Crate Layout (OPC UA, rust-postgres pattern)
+
+Large network-protocol libraries converge on a consistent multi-crate decomposition:
+
+| Crate | Purpose |
+|---|---|
+| `<proto>-types` | Wire-level types, often partially machine-generated from the protocol spec (XML schemas, `.proto` files, ASN.1, SMI) |
+| `<proto>-core` | Protocol encoding/decoding, framing, common functionality across client and server |
+| `<proto>-crypto` | All encryption/signing/auth, isolated behind an interface so it can be swapped |
+| `<proto>-client` | Client-side API |
+| `<proto>-server` | Server-side API |
+| `<proto>-native-tls` / `<proto>-openssl` / `<proto>-rustls` | TLS adapter variants, one per crypto backend |
+
+OPC UA (`locka99/opcua`) splits as `opcua-types` / `-core` / `-crypto` / `-client` / `-server`. rust-postgres splits as `postgres-protocol` / `postgres-types` / `tokio-postgres` / `postgres` (sync) / `postgres-derive` / `postgres-native-tls` / `postgres-openssl`. rustls splits as `rustls` / `rustls-pki-types` / crypto-provider adapter crates.
+
+**Why this converges:**
+
+- **Types crate has ZERO async/runtime deps** — sync code can use it; wasm targets can use it; multi-runtime hosts can depend on it once.
+- **Core/protocol crate** encapsulates framing so transport can be swapped.
+- **Crypto as a separate crate** allows FIPS / audit isolation and makes "swap TLS backend" a single-crate change, not a project-wide refactor.
+- **Client and server as peers** mirror symmetric roles; code shared via core.
+- **TLS adapters as peer crates** let downstream users pick without pulling the entire crypto stack for the one they don't want.
+
+**When to use:** protocol implementations of any size that will be consumed by others. The overhead is real (more Cargo.toml coordination) but the isolation payoff dominates.
+
+### Code generation from protocol specifications
+
+For protocols that have machine-readable specs (OPC UA's XML nodesets, OpenAPI JSON, .proto files, ASN.1 modules, SMI for SNMP), generate types at build time from the spec rather than hand-writing them. OPC UA's `opcua-types` is "machine generated types and handwritten types" — the generator handles what can be automated, with hand-written extensions for the cases that can't.
+
+Options:
+
+- **`build.rs` invoking a codegen tool** — simple, self-contained; spec file baked into the build.
+- **Separate generator crate** — spec → `.rs` committed to source (the OPC UA migration from a JavaScript nodeset compiler to a Rust one follows this pattern; the output is committed to the types crate).
+- **Macro-based** — like `prost` for protobuf, `sqlx::query!` for SQL. Compile-time, no separate file.
+
+Commit-generated-output is friendlier for library consumers (no tool dependency); pure build.rs is friendlier for rapidly-changing specs.
+
 ## Process-Level Default + Constructor Injection (rustls pattern)
 
 The general guidance in [SKILL.md §1 Rule 14](SKILL.md) is to avoid global mutable state and inject dependencies via constructors. Rustls demonstrates a **pragmatic, documented exception** worth understanding: a singleton that's set once at startup with both a global accessor AND constructor injection available.

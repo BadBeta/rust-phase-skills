@@ -254,6 +254,30 @@ cargo build --bin api-server --features api --no-default-features
 cargo build --bin worker --features worker --no-default-features
 ```
 
+**Orthogonal-axis features (tokio-modbus pattern):**
+
+When a protocol or library has multiple independent dimensions — transport × mode × sync-vs-async, or backend × logger × allocator — organize features along orthogonal axes rather than hierarchical tiers:
+
+```toml
+[features]
+# Transport axis (Modbus variants)
+rtu = ["dep:tokio-serial"]
+tcp = []
+rtu-over-tcp-server = ["rtu", "tcp"]
+
+# Mode axis (sync wrappers, server support)
+sync = []
+rtu-sync = ["rtu", "sync"]
+tcp-sync = ["tcp", "sync"]
+server = ["dep:socket2"]
+rtu-server = ["rtu", "server"]
+tcp-server = ["tcp", "server"]
+```
+
+The named features (`rtu-sync`, `tcp-server`, ...) compose the two axes (transport + mode). Users enable what they need; internal base features (`sync`, `server`) are shared implementation. This gives 8 meaningful configurations with 3 axis-aware features.
+
+**When this pattern fits:** axes are genuinely independent, user may want any combination, no axis is "optional extension" of another.
+
 **Tiered feature architecture (nushell pattern):**
 
 When a large application has many optional capabilities, tier them:

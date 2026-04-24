@@ -3284,6 +3284,60 @@ impl Handler<DoWork> for Worker {
 }
 ```
 
+### Byte-stream protocol framing: `tokio_util::codec`
+
+For parsing bytes into higher-level messages (the "framing" layer of any wire protocol — Modbus, MQTT, HTTP, length-prefix, line-delimited, TLV, etc.), the standard Rust pattern is `tokio_util::codec::{Decoder, Encoder, Framed}`:
+
+```rust
+use bytes::{Buf, BufMut, BytesMut};
+use tokio_util::codec::{Decoder, Encoder};
+
+struct MyCodec;
+
+#[derive(Debug)]
+enum Frame { Request(u16), Response(u16, Vec<u8>) }
+
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+enum MyCodecError {
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("invalid frame")]
+    Invalid,
+}
+
+impl Decoder for MyCodec {
+    type Item = Frame;
+    type Error = MyCodecError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Frame>, Self::Error> {
+        if src.len() < 4 { return Ok(None); }           // need more bytes
+        let len = (&src[..2]).get_u16() as usize;
+        if src.len() < 2 + len { return Ok(None); }      // incomplete frame
+        src.advance(2);
+        let id = src.get_u16();
+        // ... parse payload ...
+        Ok(Some(Frame::Request(id)))
+    }
+}
+
+impl Encoder<Frame> for MyCodec { /* ... */ }
+
+// Usage with a TCP socket
+use futures::{SinkExt, StreamExt};
+use tokio_util::codec::Framed;
+
+let socket = tokio::net::TcpStream::connect("10.0.0.1:502").await?;
+let mut framed = Framed::new(socket, MyCodec);
+framed.send(Frame::Request(42)).await?;
+while let Some(frame) = framed.next().await {
+    let frame = frame?;
+    // handle
+}
+```
+
+Protocol libraries (tokio-modbus, mqtt libraries, custom binary protocols) all converge on this. Benefits: `Decoder::decode` is called repeatedly as bytes arrive; returns `Ok(None)` to request more bytes; automatically handles partial reads. The `Framed<S, C>` wraps an `AsyncRead + AsyncWrite` source and exposes a `Stream<Item = Frame>` + `Sink<Frame>`.
+
 ### Custom Actors with async-std
 
 > **Note:** `async-std` was discontinued in March 2025 (v1.13.1 was the final release). For new code, use the Tokio equivalents (`tokio::sync::mpsc::channel`, `tokio::spawn`) or `smol`. The pattern below is retained for readers maintaining existing `async-std` code; the shape of the pattern is identical across runtimes.

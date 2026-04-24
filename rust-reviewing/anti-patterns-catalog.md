@@ -532,6 +532,38 @@ Validated against the embedded-Rust ecosystem: **embassy** (modern async embedde
 
 ---
 
+## Validation pass 10 (2026-04-24) — OPC UA + tokio-modbus (industrial protocols)
+
+Validated against the industrial-protocol domain: **locka99/opcua** (full OPC UA client + server — industrial automation, 10-crate workspace) and **slowtec/tokio-modbus** (Modbus TCP/RTU — the workhorse industrial fieldbus).
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Protocol-implementation canonical crate layout | OPC UA splits as `opcua-types` + `opcua-core` + `opcua-crypto` + `opcua-client` + `opcua-server`. rust-postgres splits as `postgres-protocol` + `postgres-types` + `tokio-postgres` + `postgres-native-tls` + `postgres-openssl`. rustls splits similarly. | **New pattern documented** in rust-planning/architecture-patterns.md — "Protocol-Implementation Crate Layout" with canonical decomposition (types / core / crypto / client / server / TLS-adapter-per-backend) and the rationale for each split. |
+| Code generation from protocol specifications | OPC UA uses machine-generated types from XML nodesets; the generator was itself migrated from JavaScript to Rust; output committed to the `opcua-types` crate | **New subsection** in architecture-patterns.md documenting: (a) `build.rs`-driven codegen; (b) separate generator crate with committed output (OPC UA pattern); (c) macro-based (`prost`, `sqlx::query!`). Trade-offs for each. |
+| Orthogonal-axis feature architecture | tokio-modbus has 8 features along THREE axes: transport (rtu/tcp/rtu-over-tcp-server) × mode (sync/server) × base. Named features compose: `rtu-sync`, `tcp-server`, etc. | **New pattern documented** in workspace-layout.md — orthogonal-axis features, with the tokio-modbus example. Contrasts with the tiered/hierarchical pattern (nushell) and facade pattern (ripgrep). Fits when dimensions are genuinely independent. |
+| Sync-wrapper-around-async-library via feature | tokio-modbus offers `rtu-sync` and `tcp-sync` as sync variants that internally use a private tokio runtime with `block_on` | **New pattern documented** in async-strategy.md §5.5 — when/when-not to offer sync wrappers. Fits async-first libraries whose users include sync environments (CLI, industrial scripts, PLC comms). |
+| Byte-stream protocol framing via `tokio_util::codec` | tokio-modbus uses codec feature for RTU/TCP framing abstraction. MQTT libs, HTTP libs, custom-binary protocols all converge on `Decoder`/`Encoder`/`Framed` | **New section documented** in rust-implementing/async-patterns.md — complete Decoder/Encoder/Framed example with partial-read handling, `BytesMut` buffer management, and typed errors. Pattern for any byte-level protocol parsing. |
+| Release profile for industrial/edge binaries | OPC UA uses `opt-level = 'z'` + `lto = true` + `panic = 'abort'` for small binaries on constrained industrial hardware | Confirms existing workspace-layout.md size-optimized profile advice for edge/embedded deployment targets. |
+| `log` crate instead of `tracing` in libraries | tokio-modbus uses `log` not `tracing`. Same choice reqwest made. | Data point: libraries weighing dep-footprint trade-offs choose `log` over `tracing` for smaller transitive graph. `tracing` remains the default for application-tier code. |
+| `async-trait` still used alongside native async fn in traits | tokio-modbus (MSRV 1.85) still uses `async-trait 0.1.77` | Data point: native `async fn` in traits (stable since 1.75) has limitations (not dyn-compatible, no `Send` bounds without `trait_variant`). `async-trait` remains valuable for dyn-compatible + `Send`-bounded async traits. |
+| MSRV declared for a protocol library | tokio-modbus: `rust-version = "1.85"` | Consistent with other library patterns. |
+| Language update: master/slave → client/server | tokio-modbus explicitly renames in docs: "master is called client and slave is called server" | Cultural update in modern protocol libraries moving away from legacy terminology. Worth being aware of in reviews. Not a rule change. |
+
+### Updates applied after pass 10
+
+1. **architecture-patterns.md** — added "Protocol-Implementation Crate Layout" section with the canonical types/core/crypto/client/server split pattern, covering OPC UA, rust-postgres, rustls; plus code-generation-from-spec options with trade-offs.
+2. **workspace-layout.md** — added orthogonal-axis features pattern (tokio-modbus) alongside existing tiered (nushell) and facade (ripgrep) patterns.
+3. **async-strategy.md** — added Decision 5.5 "Sync wrapper around an async library" documenting when to offer sync feature variants and when not to.
+4. **rust-implementing/async-patterns.md** — added "Byte-stream protocol framing: `tokio_util::codec`" section with complete Decoder/Encoder/Framed example including partial-read handling and typed errors. Applies to any wire protocol — Modbus, MQTT, HTTP, length-prefix, line-delimited, TLV.
+
+### Pass 10 sources
+- [locka99/opcua](https://github.com/locka99/opcua) — root `Cargo.toml`, design docs, crate split
+- [slowtec/tokio-modbus](https://github.com/slowtec/tokio-modbus) — root `Cargo.toml`, feature matrix
+- [tokio_util::codec docs](https://docs.rs/tokio-util/latest/tokio_util/codec/index.html) — Decoder/Encoder/Framed pattern
+- [basysKom — OPC UA and Rust in 2025](https://www.basyskom.de/en/opc-ua-and-rust-in-2025/) — industry-status write-up
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).

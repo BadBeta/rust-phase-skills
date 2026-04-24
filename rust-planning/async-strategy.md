@@ -171,6 +171,35 @@ async fn shutdown_signal() {
 }
 ```
 
+## Decision 5.5 — Sync wrapper around an async library (tokio-modbus pattern)
+
+A common need: your library's primary API is async (for efficiency, for concurrent I/O), but some users want to call it from sync code without adopting tokio themselves. Pattern: offer sync wrappers as feature-gated variants that internally `block_on` a private runtime.
+
+tokio-modbus exemplifies this:
+
+```toml
+[features]
+rtu = ["dep:tokio-serial"]
+tcp = []
+sync = []                  # internal marker
+rtu-sync = ["rtu", "sync"]  # sync wrapper around async RTU client
+tcp-sync = ["tcp", "sync"]  # sync wrapper around async TCP client
+```
+
+The sync API is implemented by spawning a private `tokio::runtime::Runtime`, running the async call via `block_on`, and returning the result. Users who already have a tokio runtime use the async API; users in sync contexts opt into a sync variant via the feature flag.
+
+**When to offer sync wrappers:**
+
+- Your library is clearly async-first (I/O-heavy, concurrent)
+- But you have users in sync environments (CLI tools, industrial scripts, PLC communication) who would otherwise write their own block_on wrapper
+- The cost is small: a few `_sync` fns calling `runtime.block_on(async_fn())`
+
+**Don't offer sync wrappers when:**
+
+- Your library is not genuinely async in shape (ceremonial `async fn` without awaits)
+- Sync consumers could trivially wrap themselves (one-line `pollster::block_on(...)` calls)
+- The internal runtime creation would be hidden global state — be explicit about it if you do
+
 ## Decision 6 — When NOT to add channels
 
 Most Rust applications don't need channels for internal component communication. Direct function calls through trait-bounded dependencies are the right default.
