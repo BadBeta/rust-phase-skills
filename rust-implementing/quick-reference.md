@@ -1930,6 +1930,79 @@ type_name::<T>()                           // Type name as &str (std::any)
 #[repr(u8)]                                // Enum discriminant type
 ```
 
+## Type Conversions (quick reference)
+
+```rust
+// String ↔ &str
+let s: String = "hello".to_string();   // &str -> String
+let s: String = String::from("hello"); // &str -> String (equivalent)
+let s: &str = &my_string;              // String -> &str (Deref)
+let s: &str = my_string.as_str();      // String -> &str (explicit)
+
+// Numeric conversions
+let n: i64 = i32_value as i64;         // Numeric widening (use TryFrom for narrowing)
+let n: i32 = "42".parse()?;            // String -> number (inferred)
+let n = "42".parse::<f64>()?;          // String -> number (turbofish)
+let s: String = 42.to_string();        // number -> String (Display)
+
+// Option ↔ Result
+let opt: Option<i32> = result.ok();        // Result -> Option (discards Err)
+let result = opt.ok_or(Error::Missing)?;   // Option -> Result (lazy: .ok_or_else)
+
+// Bytes ↔ strings
+let bytes: &[u8] = s.as_bytes();           // &str -> &[u8]
+let s = std::str::from_utf8(bytes)?;       // &[u8] -> &str (validated)
+let s = String::from_utf8(vec)?;           // Vec<u8> -> String (validated, takes ownership)
+let vec: Vec<u8> = s.into_bytes();         // String -> Vec<u8>
+
+// Path ↔ string
+let p = PathBuf::from("/tmp/x");           // &str -> PathBuf
+let s = p.to_string_lossy();               // Path -> Cow<str> (lossy for non-UTF-8)
+let s = p.to_str().ok_or(Error::NonUtf8)?; // Path -> &str (fails on non-UTF-8)
+```
+
+## OnceLock Patterns (quick reference)
+
+`OnceLock` is runtime-init-once shared state — use when the value is expensive or fallible to create, or needs runtime input `LazyLock` can't provide.
+
+```rust
+use std::sync::OnceLock;
+
+// Pattern 1: set at startup, read thereafter (DB pool, clients, config)
+static DB_POOL: OnceLock<PgPool> = OnceLock::new();
+
+async fn init_db(url: &str) -> Result<(), InitError> {
+    let pool = PgPool::connect(url).await?;
+    DB_POOL.set(pool).map_err(|_| InitError::AlreadyInit)?;
+    Ok(())
+}
+
+fn get_pool() -> &'static PgPool {
+    DB_POOL.get().expect("DB_POOL not initialized — call init_db first")
+}
+
+// Pattern 2: get_or_init — lazy with runtime-dependent value
+static SHARD_COUNT: OnceLock<usize> = OnceLock::new();
+let count = *SHARD_COUNT.get_or_init(|| {
+    std::thread::available_parallelism().map_or(4, |n| n.get() * 4)
+});
+
+// Pattern 3: Tokio runtime in NIF/FFI — Runtime::new() can fail, so LazyLock can't be used
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn init_runtime() -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+    RUNTIME.set(rt).map_err(|_| "runtime already initialized".into())
+}
+
+fn use_runtime() -> &'static tokio::runtime::Runtime {
+    RUNTIME.get().expect("runtime not initialized — call init_runtime first")
+}
+```
+
 ## Related Skills
 
 - **[SKILL.md](SKILL.md)** — Core Rust: ownership, traits, error handling, iterators, serde, async

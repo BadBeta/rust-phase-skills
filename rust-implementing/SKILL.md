@@ -2292,38 +2292,23 @@ impl OrderValidator for QuantityValidator {
 > test timeouts), database test fixtures (sqlx test databases), E2E testing patterns,
 > test organization (unit vs integration vs doc tests).
 
-## Profiling & Performance
+## Performance — writing performant code
 
-```rust
-// Benchmarking with criterion
-// benches/my_bench.rs
-use criterion::{criterion_group, criterion_main, Criterion};
+When writing performance-sensitive code, these are the implementation-side levers:
 
-fn bench_sort(c: &mut Criterion) {
-    c.bench_function("sort_1000", |b| {
-        b.iter(|| {
-            let mut data: Vec<i32> = (0..1000).rev().collect();
-            data.sort();
-        })
-    });
-}
+- Pre-allocate with `Vec::with_capacity()` / `HashMap::with_capacity()` when you know the size
+- Take `&str` / `&[T]` instead of `String` / `Vec<T>` in function params unless you need ownership
+- Avoid `.clone()` to "silence" the borrow checker — restructure ownership instead (see §Rules rule 17)
+- `SmallVec` for small-N collections that rarely grow
+- `Box<dyn Trait>` has vtable overhead in hot loops → monomorphize with generics or use enum dispatch
+- Hold `MutexGuard` for the shortest possible scope; never across `.await`
+- For parallelism on CPU-bound work, use `rayon::par_iter()`; for concurrent I/O, use Tokio
 
-criterion_group!(benches, bench_sort);
-criterion_main!(benches);
-```
+**Measuring / benchmarking / profiling is a reviewing-phase activity.** Don't optimize blind:
 
-```bash
-# Profiling tools
-cargo flamegraph                    # CPU flame graphs
-cargo bench                         # criterion benchmarks
-cargo install dhat && cargo run     # heap profiling (with dhat crate)
-```
-
-**Key optimization patterns:** pre-allocate with `Vec::with_capacity()`, use `&str` over `String`, avoid unnecessary cloning, use `HashMap::with_capacity()`, prefer stack allocation, use `SmallVec` for small collections.
-
-> **Deep dive:** [data-structures.md](data-structures.md) — criterion setup (parameterized benchmarks,
-> comparison groups, throughput), flamegraph interpretation, DHAT heap profiling, perf integration,
-> cache-friendly data layout, SIMD opportunities, allocation tracking, memory optimization patterns.
+- [rust-reviewing/profiling-playbook.md](../rust-reviewing/profiling-playbook.md) — criterion/iai/divan micro-bench setup; flamegraph/samply/perf for CPU; DHAT/heaptrack for heap; tokio-console for async; compile-time profiling
+- [rust-reviewing/performance-catalog.md](../rust-reviewing/performance-catalog.md) — 25+ common pitfalls with symptom → root cause → fix
+- [data-structures.md](data-structures.md) — Rust-specific data structure performance patterns (SmallVec, indexmap, capacity pre-allocation)
 
 ## Rust 2024 Edition
 
@@ -2357,531 +2342,126 @@ unsafe extern "C" {
 }
 ```
 
-## Quick Reference — Daily-Use Patterns
+## Quick Reference — Top ~100 Daily Patterns
 
-### Type Conversions
+The absolute most-used snippets. Anything deeper lives in **[quick-reference.md](quick-reference.md)** — String, Vec, HashMap, Option, Result, io, fs, env, Path, Time, Tokio, serde, regex, Display/FromStr/From/Into/AsRef/Deref, macros, cfg attrs, derives, reqwest, chrono, anyhow/thiserror, plus type conversions and OnceLock patterns.
+
+### Type conversions (most-needed)
 
 ```rust
 let s: String = "hello".to_string();   // &str -> String
-let s: String = String::from("hello"); // &str -> String (equivalent)
-let s: &str = &my_string;              // String -> &str (Deref)
-let s: &str = my_string.as_str();      // String -> &str (explicit)
-let n: i64 = i32_value as i64;         // Numeric widening
-let n: i32 = "42".parse()?;            // String -> number (turbofish)
-let n = "42".parse::<f64>()?;          // String -> number (turbofish alt)
-let s: String = 42.to_string();        // number -> String (Display)
-let opt: Option<i32> = result.ok();    // Result -> Option (discards Err)
-let result = opt.ok_or(Error::Missing)?; // Option -> Result
-let bytes: &[u8] = s.as_bytes();       // &str -> &[u8]
-let s = std::str::from_utf8(bytes)?;   // &[u8] -> &str
-let s = String::from_utf8(vec)?;       // Vec<u8> -> String
-let vec: Vec<u8> = s.into_bytes();     // String -> Vec<u8>
+let s: &str  = &my_string;              // String -> &str (Deref)
+let n: i32   = "42".parse()?;           // &str -> number
+let s: String = 42.to_string();         // number -> String
+let opt = result.ok();                  // Result -> Option
+let res = opt.ok_or(Error::Missing)?;   // Option -> Result
+let bytes: &[u8] = s.as_bytes();        // &str -> &[u8]
+let s = std::str::from_utf8(bytes)?;    // &[u8] -> &str
 ```
 
-### Common Derives
+### Common derives
 
 ```rust
-#[derive(Debug)]                    // {:?} formatting
-#[derive(Clone, Copy)]             // Value semantics (Copy requires Clone)
-#[derive(PartialEq, Eq)]           // Equality comparison (Eq requires PartialEq)
-#[derive(Hash)]                     // HashMap/HashSet keys (requires Eq)
-#[derive(PartialOrd, Ord)]         // Ordering/sorting (Ord requires Eq + PartialOrd)
-#[derive(Default)]                  // Default::default()
-#[derive(Serialize, Deserialize)]   // serde
+#[derive(Debug)]                         // {:?} formatting
+#[derive(Clone, Copy)]                   // Value semantics (Copy requires Clone)
+#[derive(PartialEq, Eq, Hash)]          // HashMap/HashSet keys
+#[derive(PartialOrd, Ord)]               // Sorting
+#[derive(Default)]                        // Default::default()
+#[derive(Serialize, Deserialize)]        // serde
+#[derive(thiserror::Error)]              // Library error types
 ```
 
-### LazyLock (std, stable 1.80+)
+### LazyLock / OnceLock one-liners
 
 ```rust
 use std::sync::{LazyLock, OnceLock};
+static REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+$").unwrap());
+static POOL: OnceLock<PgPool> = OnceLock::new();  // .set() once, .get() thereafter
+```
+(Full patterns — DB pool init, Tokio runtime for NIF/FFI, `get_or_init` — in [quick-reference.md](quick-reference.md).)
 
-// LazyLock: value computed on first access (replaces once_cell::sync::Lazy)
-static CONFIG: LazyLock<Config> = LazyLock::new(|| {
-    Config::load("config.toml").expect("failed to load config")
-});
+### Option essentials
 
-static REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap()
-});
-
-// OnceLock: value set at runtime, read many times (replaces once_cell::sync::OnceCell)
-static DB_POOL: OnceLock<PgPool> = OnceLock::new();
-
-async fn init_db(url: &str) {
-    let pool = PgPool::connect(url).await.unwrap();
-    DB_POOL.set(pool).expect("DB_POOL already initialized");
-}
-
-fn get_pool() -> &'static PgPool {
-    DB_POOL.get().expect("DB_POOL not initialized — call init_db first")
-}
-
-// OnceLock::get_or_init — lazy with runtime value (dashmap uses this pattern)
-static SHARD_COUNT: OnceLock<usize> = OnceLock::new();
-let count = *SHARD_COUNT.get_or_init(|| {
-    std::thread::available_parallelism().map_or(4, |n| n.get() * 4)
-});
-
-// OnceLock for tokio runtime in NIF/FFI contexts — the critical pattern
-// LazyLock won't work here because Runtime::new() can fail
-static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-
-fn init_runtime() -> Result<(), String> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    RUNTIME.set(rt).map_err(|_| "runtime already initialized".into())
-}
-
-fn use_runtime() -> &'static tokio::runtime::Runtime {
-    RUNTIME.get().expect("runtime not initialized — call init_runtime first")
-}
+```rust
+opt.map(|x| x.len())                    // Option<T> -> Option<U>
+opt.and_then(|x| x.parse().ok())       // flat_map — avoids Option<Option<_>>
+opt.unwrap_or_default()                 // T or Default
+opt.unwrap_or_else(|| compute())        // T or lazy default
+opt.ok_or(Error::Missing)?             // convert to Result and propagate
+opt.as_deref()                          // Option<String> -> Option<&str>
+opt.is_some_and(|x| x > 0)             // bool (stable 1.70+)
+opt?                                    // early-return None
 ```
 
-### String Operations
+### Result essentials
+
+```rust
+result.map(|v| v.len())                 // transform Ok
+result.map_err(Into::into)              // translate error type at boundary
+result.and_then(|v| parse(v))          // flat_map for Result
+result.unwrap_or_else(|_| fallback())   // T or recovery
+result?                                  // early-return Err
+result.ok()                              // Result<T, E> -> Option<T>
+let all: Result<Vec<_>, _> = items.iter().map(try_parse).collect();  // short-circuits on first Err
+```
+
+### String essentials
 
 ```rust
 let s = "Hello, World!";
-
-// Searching
-s.contains("World")                    // true
-s.starts_with("Hello")                 // true
-s.ends_with('!')                       // true
-s.find("World")                        // Some(7)
-s.rfind(',')                           // Some(5)
-
-// Splitting
-s.split(',').collect::<Vec<&str>>()    // ["Hello", " World!"]
-s.splitn(2, ',').collect::<Vec<_>>()   // ["Hello", " World!"] (max 2 parts)
-s.split_whitespace().collect::<Vec<_>>() // ["Hello,", "World!"]
-s.lines().collect::<Vec<_>>()          // line-by-line iteration
-"a::b::c".rsplit("::").collect::<Vec<_>>() // ["c", "b", "a"]
-
-// Trimming
-" hello ".trim()                       // "hello"
-"##hello##".trim_matches('#')          // "hello"
-"hello\n".trim_end()                   // "hello"
-"  hello".trim_start()                 // "hello"
-
-// Replacing
-s.replace("World", "Rust")            // "Hello, Rust!"
-s.replacen("l", "L", 2)               // "HeLLo, World!" (first 2 only)
-
-// Case
-s.to_uppercase()                       // "HELLO, WORLD!"
-s.to_lowercase()                       // "hello, world!"
-s.to_ascii_lowercase()                 // ASCII-only, no allocation if unchanged
-
-// Padding / Alignment
-format!("{:>10}", "right")             // "     right"
-format!("{:<10}", "left")              // "left      "
-format!("{:^10}", "center")            // "  center  "
-format!("{:0>5}", 42)                  // "00042"
-
-// Building strings
+s.contains("World"); s.starts_with("Hello"); s.ends_with('!');
+s.split(',').collect::<Vec<_>>();       // splits (also split_whitespace, lines, rsplit)
+s.trim(); s.trim_start_matches('#');
+s.replace("World", "Rust");
+s.to_lowercase();                        // locale-aware
 let mut s = String::with_capacity(256);
-s.push('H');                           // Append char
-s.push_str("ello");                    // Append &str
-write!(s, " {}", 42).unwrap();        // Append formatted (use std::fmt::Write)
+s.push_str("prefix:"); write!(s, " {}", 42).unwrap();  // needs std::fmt::Write
 let joined = ["a", "b", "c"].join(", "); // "a, b, c"
-let combined = format!("{}-{}", x, y); // Format without moving
-
-// Char iteration
-"hello".chars().count()                // 5 (Unicode-aware length)
-"hello".char_indices()                 // (0,'h'), (1,'e'), ...
-"hello".bytes()                        // Raw bytes iterator
 ```
 
-### Vec Operations
+### Vec essentials
 
 ```rust
-let mut v = Vec::new();
-let mut v = vec![1, 2, 3];            // Macro initialization
-let v = vec![0; 100];                  // 100 zeros
-let mut v = Vec::with_capacity(1000);  // Pre-allocate
-
-// Adding
-v.push(4);                             // Append
-v.insert(1, 10);                       // Insert at index
-v.extend([5, 6, 7]);                   // Append multiple
-v.extend_from_slice(&[8, 9]);          // Append from slice
-
-// Removing
-v.pop();                               // Remove last -> Option<T>
-v.remove(0);                           // Remove at index (shifts rest, O(n))
-v.swap_remove(0);                      // Remove at index (swaps with last, O(1))
-v.truncate(5);                         // Keep only first 5
-v.retain(|x| *x > 2);                 // Keep elements matching predicate
-v.drain(1..3);                         // Remove range, returns iterator
-v.clear();                             // Remove all
-
-// Access
-v.first()                              // Option<&T>
-v.last()                               // Option<&T>
-v.get(5)                               // Option<&T> (bounds-checked)
-v[5]                                   // T (panics if out of bounds)
-
-// Searching
-v.contains(&42)                        // bool
-v.iter().position(|x| *x == 42)       // Option<usize> (first index)
-v.iter().rposition(|x| *x == 42)      // Option<usize> (last index)
-v.binary_search(&42)                   // Result<usize, usize> (must be sorted)
-
-// Sorting
-v.sort();                              // Stable sort (Ord required)
-v.sort_unstable();                     // Faster, not stable
-v.sort_by(|a, b| b.cmp(a));           // Reverse sort
-v.sort_by_key(|item| item.priority);   // Sort by field
-v.dedup();                             // Remove consecutive duplicates (sort first!)
-
-// Slicing
-let slice = &v[1..3];                 // &[T] — borrowed slice
-let (left, right) = v.split_at(3);    // Split into two slices
-let chunks = v.chunks(3);             // Iterator of &[T] chunks
-let windows = v.windows(2);           // Sliding window iterator
-
-// Transforming
+let mut v = Vec::with_capacity(1000);   // pre-allocate when size known
+v.push(x); v.extend([1, 2, 3]);
+v.pop();                                 // Option<T>
+v.swap_remove(i);                        // O(1) remove (swap with last)
+v.retain(|x| *x > 0);                   // in-place filter
+v.sort_by_key(|item| item.priority);   // sort by derived key
+v.dedup();                               // sorted-dedup
+v.binary_search(&target);                // sorted-only; Result<idx, idx>
 let squared: Vec<_> = v.iter().map(|x| x * x).collect();
-let flat: Vec<_> = nested.iter().flatten().collect();
-let unique: Vec<_> = v.into_iter().collect::<HashSet<_>>().into_iter().collect();
+let (a, b) = v.split_at(mid);
 ```
 
-### HashMap Patterns
+### HashMap essentials — master the Entry API
 
 ```rust
 use std::collections::HashMap;
-
-let mut map = HashMap::new();
-let mut map = HashMap::with_capacity(100);
-
-// Insert / Update
-map.insert("key", 42);                // Returns Option<V> (old value)
-map.insert("key", 99);                // Overwrites, returns Some(42)
-
-// Entry API (most idiomatic way to handle insert-or-update)
-map.entry("key").or_insert(0);        // Insert default if absent
-*map.entry("counter").or_insert(0) += 1; // Increment counter pattern
-map.entry("key").or_insert_with(|| expensive_default()); // Lazy default
-map.entry("key").or_default();        // Uses Default::default()
-map.entry("key").and_modify(|v| *v += 1).or_insert(1); // Modify-or-insert
-
-// Access
-map.get("key")                         // Option<&V>
-map.get_mut("key")                     // Option<&mut V>
-map["key"]                             // V (panics if missing)
-map.contains_key("key")                // bool
-
-// Removing
-map.remove("key")                      // Option<V>
-map.remove_entry("key")                // Option<(K, V)>
-map.retain(|k, v| *v > 10);           // Keep matching entries
-
-// Iteration
-for (key, value) in &map { /* ... */ }
-for (key, value) in &mut map { *value += 1; }
-map.keys()                             // Iterator<Item = &K>
-map.values()                           // Iterator<Item = &V>
-
-// Build from iterators
-let map: HashMap<_, _> = vec![("a", 1), ("b", 2)].into_iter().collect();
-let counts: HashMap<char, usize> = text.chars()
-    .fold(HashMap::new(), |mut m, c| { *m.entry(c).or_insert(0) += 1; m });
-
-// Merge two maps
-map.extend(other_map);                 // Overwrites on conflict
+let mut m = HashMap::with_capacity(100);
+m.insert(key, val);                      // returns Option<V> (old value)
+*m.entry(key).or_insert(0) += 1;        // increment counter — the #1 idiom
+m.entry(key).or_insert_with(|| expensive_default());
+m.entry(key).and_modify(|v| *v += 1).or_insert(1);  // modify-or-insert
+m.get(&key); m.get_mut(&key); m.contains_key(&key); m.remove(&key);
+let counts: HashMap<char, usize> = text.chars().fold(HashMap::new(),
+    |mut m, c| { *m.entry(c).or_insert(0) += 1; m });
 ```
 
-### Option Chaining
+### Formatting cheatsheet
 
 ```rust
-let opt: Option<String> = Some("hello".to_string());
-
-// Transforming
-opt.map(|s| s.len())                   // Option<usize> — Some(5)
-opt.and_then(|s| s.parse::<i32>().ok()) // Option<i32> — flattens nested Option
-opt.filter(|s| s.len() > 3)           // Option<String> — None if predicate false
-opt.or(Some("default".into()))         // Use alternative if None
-opt.or_else(|| compute_default())      // Lazy alternative
-
-// Unwrapping
-opt.unwrap_or("default".into())        // Value or default
-opt.unwrap_or_default()                // Value or Default::default()
-opt.unwrap_or_else(|| compute())       // Value or lazy computation
-opt.expect("should have value")        // Panic with message if None
-opt?                                   // Return None from function if None
-
-// Inspecting
-opt.is_some()                          // bool
-opt.is_none()                          // bool
-opt.is_some_and(|s| s.len() > 3)      // bool (stable 1.70+)
-
-// Converting
-opt.as_ref()                           // Option<&String> (borrow inner)
-opt.as_deref()                         // Option<&str> (deref inner)
-opt.as_mut()                           // Option<&mut String>
-opt.ok_or(Error::Missing)?            // Convert to Result
-
-// Zipping
-Some(1).zip(Some("a"))                 // Some((1, "a"))
-Some(1).zip(None::<&str>)              // None
+format!("{:?}", v);                      // Debug
+format!("{:#?}", v);                     // pretty Debug (multi-line)
+format!("{} {}", a, b);                  // Display, positional
+format!("{name}: {val}", name = "x", val = 42);
+format!("{:.2}", 3.14159);              // "3.14"
+format!("{:>10}", 42); format!("{:0>5}", 42);   // " 42"; "00042"
+format!("{:x}"); format!("{:#x}"); format!("{:08b}", 42);  // hex/bin
+format!("{:?}", start.elapsed());       // Instant::elapsed() as Duration
 ```
 
-### Result Chaining
-
-```rust
-let result: Result<String, io::Error> = Ok("42".into());
-
-// Transforming
-result.map(|s| s.len())               // Result<usize, E> — Ok(2)
-result.map_err(|e| MyError::from(e))   // Result<T, MyError>
-result.and_then(|s| s.parse::<i32>().map_err(Into::into)) // Flat-map
-
-// Unwrapping
-result.unwrap_or("default".into())     // Value or default
-result.unwrap_or_default()             // Value or Default::default()
-result.unwrap_or_else(|_| fallback())  // Value or lazy computation
-result?                                // Return Err from function if Err
-
-// Inspecting
-result.is_ok()                         // bool
-result.is_err()                        // bool
-result.is_ok_and(|s| s.len() > 3)     // bool
-
-// Converting
-result.ok()                            // Option<T> (discards Err)
-result.err()                           // Option<E> (discards Ok)
-result.as_ref()                        // Result<&T, &E>
-result.as_deref()                      // Result<&str, &E> for Result<String, E>
-
-// Collecting Results
-let results: Result<Vec<i32>, _> = strings.iter()
-    .map(|s| s.parse::<i32>())
-    .collect();                         // Stops at first Err
-```
-
-### File I/O
-
-```rust
-use std::fs;
-use std::io::{self, Read, Write, BufRead, BufReader, BufWriter};
-use std::path::Path;
-
-// Simple read/write (loads entire file into memory)
-let content = fs::read_to_string("file.txt")?;       // String
-let bytes = fs::read("file.bin")?;                     // Vec<u8>
-fs::write("file.txt", "hello world")?;                 // Write all at once
-fs::write("file.bin", &[0u8; 1024])?;                  // Write bytes
-
-// Buffered reading (line-by-line, memory efficient)
-let file = fs::File::open("file.txt")?;
-let reader = BufReader::new(file);
-for line in reader.lines() {
-    let line = line?;
-    println!("{line}");
-}
-
-// Buffered writing
-let file = fs::File::create("output.txt")?;
-let mut writer = BufWriter::new(file);
-writeln!(writer, "line {}", 1)?;
-writer.flush()?;
-
-// Append to file
-let mut file = fs::OpenOptions::new()
-    .append(true)
-    .create(true)
-    .open("log.txt")?;
-writeln!(file, "log entry")?;
-
-// File metadata
-let metadata = fs::metadata("file.txt")?;
-metadata.len()                                          // File size in bytes
-metadata.is_file()                                      // bool
-metadata.is_dir()                                       // bool
-metadata.modified()?                                    // SystemTime
-
-// Directory operations
-fs::create_dir_all("path/to/dir")?;                    // mkdir -p
-fs::remove_dir_all("path/to/dir")?;                    // rm -rf
-fs::remove_file("file.txt")?;
-fs::rename("old.txt", "new.txt")?;
-fs::copy("src.txt", "dst.txt")?;
-
-// Read directory entries
-for entry in fs::read_dir(".")? {
-    let entry = entry?;
-    let path = entry.path();
-    let name = entry.file_name();                       // OsString
-    println!("{}: is_dir={}", path.display(), entry.file_type()?.is_dir());
-}
-
-// Temp files (use tempfile crate)
-// let tmp = tempfile::NamedTempFile::new()?;
-// writeln!(tmp.as_file(), "temporary data")?;
-```
-
-### Path Manipulation
-
-```rust
-use std::path::{Path, PathBuf};
-
-let path = Path::new("/home/user/docs/file.tar.gz");
-
-// Components
-path.parent()                          // Some("/home/user/docs")
-path.file_name()                       // Some("file.tar.gz")
-path.file_stem()                       // Some("file.tar")
-path.extension()                       // Some("gz")
-path.components()                      // Iterator of path components
-path.ancestors()                       // Iterator: path, parent, grandparent, ...
-
-// Querying
-path.exists()                          // bool
-path.is_file()                         // bool
-path.is_dir()                          // bool
-path.is_absolute()                     // bool
-path.is_relative()                     // bool
-
-// Building paths
-let mut buf = PathBuf::from("/home/user");
-buf.push("docs");                      // /home/user/docs
-buf.push("file.txt");                  // /home/user/docs/file.txt
-buf.set_extension("md");               // /home/user/docs/file.md
-buf.pop();                             // /home/user/docs
-
-// Joining
-let full = Path::new("/base").join("sub").join("file.txt"); // /base/sub/file.txt
-
-// Display
-println!("{}", path.display());         // Cross-platform display
-path.to_str()                          // Option<&str> (may fail for non-UTF-8)
-path.to_string_lossy()                 // Cow<str> (replaces invalid UTF-8)
-```
-
-### Environment & Process
-
-```rust
-use std::env;
-use std::process::Command;
-
-// Environment variables
-let val = env::var("HOME")?;           // Result<String, VarError>
-let val = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-env::set_var("KEY", "value");          // Set for current process
-env::vars()                            // Iterator of (String, String)
-
-// Current directory
-let cwd = env::current_dir()?;
-env::set_current_dir("/tmp")?;
-
-// Command-line arguments
-let args: Vec<String> = env::args().collect();
-let program = &args[0];
-// Better: use `clap` for CLI parsing
-
-// Running external commands
-let output = Command::new("git")
-    .args(["log", "--oneline", "-5"])
-    .current_dir("/path/to/repo")
-    .env("GIT_PAGER", "cat")
-    .output()?;                         // Captures stdout + stderr
-
-if output.status.success() {
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("{stdout}");
-} else {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    eprintln!("Error: {stderr}");
-}
-
-// Status only (inherits stdio)
-let status = Command::new("cargo")
-    .args(["build", "--release"])
-    .status()?;
-assert!(status.success());
-```
-
-### Time & Duration
-
-```rust
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-// Measuring elapsed time
-let start = Instant::now();
-do_work();
-let elapsed = start.elapsed();         // Duration
-println!("Took {:?}", elapsed);        // e.g., "Took 1.234567s"
-println!("Took {:.2?}", elapsed);      // e.g., "Took 1.23s"
-
-// Duration construction
-Duration::from_secs(60)
-Duration::from_millis(500)
-Duration::from_micros(100)
-Duration::from_nanos(1000)
-Duration::from_secs_f64(1.5)           // 1.5 seconds
-
-// Duration operations
-let total = Duration::from_secs(3) + Duration::from_millis(500);
-total.as_secs()                        // 3
-total.as_millis()                      // 3500
-total.as_secs_f64()                    // 3.5
-
-// Unix timestamp
-let now = SystemTime::now();
-let timestamp = now.duration_since(UNIX_EPOCH)?.as_secs();
-
-// For real date/time, use `chrono` or `time` crate
-// use chrono::{Utc, NaiveDate, DateTime};
-// let now: DateTime<Utc> = Utc::now();
-// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-```
-
-### Formatting Cheatsheet
-
-```rust
-// Positional and named
-format!("{} {}", "hello", "world");    // "hello world"
-format!("{0} {1} {0}", "a", "b");     // "a b a"
-format!("{name}: {val}", name = "x", val = 42); // "x: 42"
-
-// Debug vs Display
-format!("{:?}", vec![1,2,3]);          // "[1, 2, 3]"  (Debug)
-format!("{:#?}", struct_val);           // Pretty-printed Debug (multi-line)
-format!("{}", value);                   // Display (user-facing)
-
-// Numbers
-format!("{:05}", 42);                  // "00042" (zero-padded)
-format!("{:+}", 42);                   // "+42" (sign)
-format!("{:>10}", 42);                 // "        42" (right-aligned)
-format!("{:<10}", 42);                 // "42        " (left-aligned)
-format!("{:^10}", 42);                 // "    42    " (centered)
-format!("{:_>10}", 42);               // "________42" (custom fill)
-
-// Floats
-format!("{:.2}", 3.14159);            // "3.14" (2 decimal places)
-format!("{:8.2}", 3.14159);           // "    3.14" (width + precision)
-format!("{:.2e}", 1234.5);            // "1.23e3" (scientific)
-
-// Hex, Octal, Binary
-format!("{:x}", 255);                  // "ff" (lowercase hex)
-format!("{:X}", 255);                  // "FF" (uppercase hex)
-format!("{:#x}", 255);                 // "0xff" (with prefix)
-format!("{:08x}", 255);               // "000000ff" (zero-padded hex)
-format!("{:o}", 255);                  // "377" (octal)
-format!("{:b}", 255);                  // "11111111" (binary)
-format!("{:#010b}", 42);              // "0b00101010" (binary with prefix)
-
-// Pointer
-format!("{:p}", &value);               // "0x7ffd5e8e5a4c"
-```
-
-> **Quick reference:** [quick-reference.md](quick-reference.md) — common macros (assertions, output, collection,
-> development, configuration), common trait implementations (Display, FromStr, From/Into, AsRef, Deref,
-> Index, IntoIterator, Drop), regex patterns, HTTP client (reqwest), dates (chrono), random (rand),
-> UUIDs, base64, error handling crate patterns (anyhow, thiserror).
-> [async-patterns.md](async-patterns.md) — std::sync::mpsc channels, tokio channels
-> (mpsc, oneshot, broadcast, watch), crossbeam channels, CSP pipeline patterns.
+> **Deeper reference:** [quick-reference.md](quick-reference.md) covers Path/PathBuf, `fs::` read/write/buffered/directory, `env::var`/`Command`, Duration/Instant/SystemTime, regex, chrono, reqwest, serde_json, Tokio sync primitives, std trait impls (Display, FromStr, From/Into, AsRef, Deref, Index, IntoIterator, Drop), cfg attributes, and the full LazyLock/OnceLock patterns including Tokio-runtime-in-NIF. [async-patterns.md](async-patterns.md) covers channels (mpsc/oneshot/broadcast/watch) and CSP pipelines.
 
 ## Related Skills
 
