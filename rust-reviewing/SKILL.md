@@ -1149,6 +1149,112 @@ Every block/request-change comment should have:
 
 ---
 
+## 12b. Harvesting Findings — The Review → Implementing Feedback Loop
+
+A review pass is not over when the findings are fixed. It's over when
+**novel findings are promoted into the implementing catalog** so the
+next author doesn't need the review to catch the same pattern.
+
+### The gap this closes
+
+Review findings tend to fall into two populations:
+
+1. **Idiosyncratic** — specific to this PR's logic, one-off mistake,
+   non-recurring. Leave in review comments; the diff gets the fix.
+2. **Patterned** — this is the third time a `.unwrap_or_else(|_| default)`
+   slipped through on a library-init path, or the fourth time a
+   public `fn foo() -> Result<T, E>` shipped without a `# Errors`
+   section. These are *not* one-offs. They are tells that the
+   implementing skill is missing a BAD/GOOD pair, or the anti-slop
+   catalog is missing a regex, or `rust-implementing §1` is missing
+   a rule.
+
+Without a promotion ritual, patterned findings stay in review output
+and fire again in the next review. The catalog doesn't grow from the
+evidence.
+
+### The ritual — post-review promotion
+
+After each review pass that produced >3 findings, walk the findings
+list with this question for each:
+
+> *If I saw this pattern in a different PR six months from now, would
+> I flag it again? And would it help if this skill / hook caught it
+> at write time instead of review time?*
+
+If the answer to both is yes, promote:
+
+| Finding shape | Where it goes |
+|---|---|
+| Simple regex catch (e.g., `let _ = fallible()`) | **`anti-slop-patterns.json`** as a new check under the right language group. Severity `warn` unless the pattern is clearly a bug. Write a message that points at the real rule. |
+| Idiom violation with a one-line fix | **`rust-implementing/SKILL.md §7b` or the relevant BAD/GOOD pair section**. Format: 5-10 line BAD block, 5-10 line GOOD block, 1-2 line rationale. |
+| Architectural / design-time concern | **`rust-planning/SKILL.md §1` (as a new rule)** or into the relevant subskill. |
+| Proactive check that complements a reactive review rule | **`rust-implementing §1` as a new numbered rule**, cross-referenced with the review-time counterpart. Example: the SSOT proactive rule (§1 #19) pairs with the review-time SSOT litmus (this skill's §1 rule 16). |
+
+### What NOT to promote
+
+- **Taste preferences.** "I'd name this `handle_message` not
+  `on_message`" is not a pattern.
+- **One-shot mistakes.** A typo, a misread spec. Those get fixed in
+  the diff and stay there.
+- **Project-specific rules.** "In this codebase, `policy.rs` is the
+  SSOT file." That belongs in the project's `CLAUDE.md` or
+  `continue.md`, not in a global skill.
+- **Findings whose fix is still disputed.** If the PR author pushed
+  back and the team is still debating, don't codify. Let the
+  resolution settle first.
+
+### Litmus for "is this repeatable slop?"
+
+Before writing a new anti-slop pattern, check:
+
+1. Have I seen this pattern in more than one session/project? (If no
+   and you suspect it's a one-off, don't codify.)
+2. Is the pattern detectable by a reasonably simple regex, or does it
+   require semantic analysis? (Pure regex wins. Semantic analysis
+   means a more sophisticated hook, which is fine but adds cost.)
+3. Is there a clear idiomatic fix, not just "this is bad"? (Without a
+   fix, the pattern is a complaint, not a rule.)
+
+If all three are yes, write the catch. If any is no, leave it in the
+review output and wait for a second occurrence.
+
+### Worked example — the `let _ = fallible()` catch
+
+Three separate review passes caught variants of:
+
+```rust
+let _ = std::io::stdout().flush();
+let _ = file.sync_all();
+let _ = socket.shutdown();
+```
+
+Each fix was the same: `.expect("invariant: ...")` if the error path
+is provably unreachable at that point, or proper error handling if
+it isn't. Three occurrences → promotion criterion met. Result: new
+check `silent-let-underscore-fallible` in `anti-slop-patterns.json`
+(severity `warn`), pointing at the existing `§7b #14` for the full
+BAD/GOOD pair. The regex catches variants; the BAD/GOOD pair
+explains the why; the skill rule references the pair.
+
+This is the target shape: each layer reinforces the others.
+
+### When the catalog should shrink
+
+Patterns rot, too. A check that fires once per review but always gets
+a `RULE-EXCEPTION` marker is wrong — either the regex is too broad or
+the pattern isn't really slop. Remove checks that:
+
+- Fire only on false positives that nobody actually fixes.
+- Were added for a specific project that no longer reflects current
+  practice.
+- Have been superseded by a more precise check.
+
+A catalog that only grows eventually becomes ignored. Prune when a
+check stops paying for itself.
+
+---
+
 ## 13. Related Skills
 
 - **[rust-planning](../rust-planning/SKILL.md)** — Architectural planning: project layout, crate boundaries, trait placement, error strategy, async strategy, test strategy, resilience. Load when you need to decide *what should be built*.

@@ -714,6 +714,246 @@ fn main() -> miette::Result<()> {
 | **color-eyre** | CLI tools, user-facing apps | Colorized output, SpanTrace |
 | **miette** | Compilers, linters, config parsers | Source snippets, labels |
 
+## Error Evolution — String-typed variant → typed sub-enum
+
+A recurring journey in real codebases: a single error variant starts
+out as a catch-all `String` for a new subsystem, and evolves (as the
+subsystem grows) into a typed sub-enum. This template captures the
+end-to-end refactor so it stops being a from-scratch 20-minute job
+every time.
+
+### The starting point
+
+```rust
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+pub enum Error {
+    // ... existing variants ...
+
+    #[error("TLS: {0}")]
+    Tls(String),
+}
+```
+
+The `String` is pragmatic when you first add TLS — you don't know
+which kinds of TLS failures matter yet. Callers match on
+`Error::Tls(_)` and that's it.
+
+### The signal that it's time to evolve
+
+Any of the following means "grow up this variant":
+
+- You're doing string-pattern-matching on the inner message to decide
+  what to do (retry vs. abort, report vs. swallow).
+- Review findings repeat: "the TLS error message could tell me which
+  phase failed."
+- You're adding a third or fourth distinct `format!("...: {e}")`
+  construction of the same variant.
+- Downstream callers have asked for a typed way to handle it.
+
+### The refactor
+
+Add a typed sub-enum next to the main error. Wire it via `#[from]` so
+`?` and existing call sites keep working.
+
+```rust
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+pub enum Error {
+    // ... existing variants ...
+
+    #[error("TLS: {0}")]
+    Tls(#[from] TlsError),  // was: Tls(String)
+}
+
+/// Typed TLS error kinds. Surfaced through [`Error::Tls`].
+/// `#[non_exhaustive]` so adding variants later is not a breaking
+/// change.
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+pub enum TlsError {
+    #[error("no certificates found in PEM")]
+    NoCerts,
+
+    #[error("no private key found in PEM")]
+    NoKey,
+
+    #[error("reading PEM: {0}")]
+    Pem(String),
+
+    #[error("handshake: {0}")]
+    Handshake(String),
+
+    #[error("invalid server name {name:?}: {reason}")]
+    BadServerName { name: String, reason: String },
+}
+```
+
+### Call-site migration
+
+Old constructors mostly shrink, and the `#[from]` conversion does the
+plumbing:
+
+```rust
+// Before:
+Err(Error::Tls("no certificates found in PEM".into()))
+
+// After:
+Err(TlsError::NoCerts.into())  // From<TlsError> for Error
+
+// Before:
+.map_err(|e| Error::Tls(format!("server config: {e}")))?;
+
+// After:
+.map_err(|e| TlsError::ServerConfig(e.to_string()))?;
+// (implicit From conversion when the ? happens)
+```
+
+### Test migration
+
+Existing tests that matched on the stringly-typed form need updating:
+
+```rust
+// Before:
+assert!(matches!(err, Error::Tls(_)));
+
+// After — unchanged if you kept the tuple variant shape:
+assert!(matches!(err, Error::Tls(_)));
+
+// Or more specifically:
+assert!(matches!(err, Error::Tls(TlsError::NoCerts)));
+```
+
+### Rules for the evolution
+
+1. **Keep `Error::Tls` as a tuple variant** (`Tls(TlsError)`, not
+   `Tls { kind: TlsError }`). The tuple shape lets existing `Error::Tls(_)`
+   matches keep compiling.
+2. **`#[non_exhaustive]` on both `Error` and `TlsError`.** Adding
+   variants is non-breaking with this attribute.
+3. **Give variants meaningful names, not `Inner(String)`.** The whole
+   point is that callers can match — `NoCerts`, `Handshake`, and
+   `BadServerName` beat `A`, `B`, `C`.
+4. **Keep remaining `String` payloads for values that are genuinely
+   opaque** (wrapped rustls errors, wrapped serde errors). Don't
+   convert those to yet more typed enums unless you'll match on them.
+5. **Re-export the sub-enum from the crate root** so callers can
+   `use my_crate::TlsError;` without knowing its module path.
+
+## Extracting a Setup Bundle — Shared Construction Across Adjacent Functions
+
+Pattern Claude commonly writes: two public constructors (`start` and
+`start_tls`, or `new` and `new_with_config`) that share 20-30 lines of
+identical setup, diverging only in one final spawn / handler choice.
+DRY at this scale pays off — the review skill's SSOT litmus fires on
+it, and future struct-field changes double-apply.
+
+### The anti-pattern
+
+```rust
+impl Node {
+    pub async fn start(...) -> Result<...> {
+        let listener = TcpListener::bind(...).await?;
+        let local_addr = listener.local_addr()?;
+        let epmd = EpmdClient::register(...).await?;
+        let creation = epmd.registration().creation;
+        let (event_tx, event_rx) = mpsc::channel(64);
+        let shutdown = CancellationToken::new();
+        let peers = Arc::new(Mutex::new(HashMap::new()));
+        let registry = Arc::new(Mutex::new(HashMap::new()));
+        let ctx = PeerContext { /* 7-field literal */ };
+        let accept_task = tokio::spawn(accept_loop(listener, ctx));
+        Ok((Self { /* 10-field literal */ }, event_rx))
+    }
+
+    pub async fn start_tls(..., tls: ServerTlsConfig) -> Result<...> {
+        // ~30 lines of identical setup repeated here, diverging only
+        // in `accept_loop_tls` and the `tls` parameter.
+    }
+}
+```
+
+### The refactor — three-part split
+
+Split into three small functions:
+
+1. **`prepare`** — async, returns the setup bundle plus any resource
+   that gets *moved* into the accept loop (e.g., the listener).
+2. **`build_peer_context`** — pure, takes `&setup`, returns a
+   `PeerContext`. Small enough to inline but nicer as a named step.
+3. **`assemble`** — takes a `NodeSetup` plus the caller-spawned accept
+   task handle, returns `(Self, Receiver<Event>)`.
+
+```rust
+struct NodeSetup {
+    full_name: String,
+    cookie: String,
+    shutdown: CancellationToken,
+    peers: PeerMap,
+    registry: NameRegistry,
+    event_tx: mpsc::Sender<NodeEvent>,
+    event_rx: mpsc::Receiver<NodeEvent>,
+    epmd: EpmdClient,
+    creation: u32,
+    local_addr: SocketAddr,
+    // NOTE: no `listener` — it moves into the accept task.
+}
+
+impl Node {
+    async fn prepare(full_name: &str, cookie: &str, port: u16)
+        -> Result<(NodeSetup, TcpListener)>
+    { /* the shared 30 lines, once */ }
+
+    fn build_peer_context(setup: &NodeSetup) -> PeerContext { /* ... */ }
+
+    fn assemble(s: NodeSetup, accept_task: JoinHandle<()>)
+        -> (Self, mpsc::Receiver<NodeEvent>)
+    {
+        (Self { /* fill from s */ }, s.event_rx)
+    }
+
+    pub async fn start(full_name: &str, cookie: &str, port: u16)
+        -> Result<(Self, mpsc::Receiver<NodeEvent>)>
+    {
+        let (setup, listener) = Self::prepare(full_name, cookie, port).await?;
+        let ctx = Self::build_peer_context(&setup);
+        let accept_task = tokio::spawn(accept_loop(listener, ctx));
+        Ok(Self::assemble(setup, accept_task))
+    }
+
+    pub async fn start_tls(full_name: &str, cookie: &str, port: u16,
+                           tls: ServerTlsConfig)
+        -> Result<(Self, mpsc::Receiver<NodeEvent>)>
+    {
+        let (setup, listener) = Self::prepare(full_name, cookie, port).await?;
+        let ctx = Self::build_peer_context(&setup);
+        let accept_task = tokio::spawn(accept_loop_tls(listener, tls.acceptor().clone(), ctx));
+        Ok(Self::assemble(setup, accept_task))
+    }
+}
+```
+
+### Why this shape, not others
+
+- **Why separate `prepare` / `assemble` instead of one `new_with_spawner`?**
+  A spawner-closure signature (e.g., `F: FnOnce(TcpListener, PeerContext) -> JoinHandle<()>`)
+  works but pushes generics onto the constructor. A non-generic
+  shared helper is simpler for a struct with multiple entry points.
+- **Why not keep the listener in `NodeSetup`?** Because the listener
+  is *moved* into the accept task. Putting it in a struct that also
+  gets consumed by `assemble` fights ownership. Returning it as a
+  separate tuple element is honest about the lifecycle.
+- **Why return a tuple `(NodeSetup, TcpListener)` instead of a struct
+  with an `Option<TcpListener>` field?** `Option` is a lie — the
+  listener is NEVER `None` at `prepare`'s return. The tuple expresses
+  "here are two things you need, structured differently."
+
+### When not to do this
+
+If two functions share 5-10 lines, inline is fine. If they share 30+,
+extract. Between those, judgment call — the weight of evidence is "did
+a previous refactor forget to update one of them?" If yes, extract.
+
 ## Error Conversion Patterns
 
 ### From Trait Conversions
