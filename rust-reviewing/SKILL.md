@@ -1,21 +1,19 @@
 ---
 name: rust-reviewing
 description: >
-  Rust code inspection — reviewing PRs and diffs, debugging bugs, and profiling performance.
-  Covers the full audit toolkit: review checklists by area (architecture, ownership/lifetimes,
-  control flow, async correctness, error handling, unsafe, testing, security, performance,
-  API design), severity classification, the debugging playbook (panic + backtrace, OOM,
-  deadlock, slow async, flaky test, UB from Miri, undefined behavior from sanitizers,
-  compile errors, lifetime errors), the profiling playbook (criterion, flamegraph, perf,
-  DHAT, tokio-console, samply, cargo-llvm-lines, iai, massif), performance pitfall catalog,
-  refactor templates (`Arc<Mutex>` → channels, `Box<dyn>` → enum, `String` → `&str`,
-  `Vec<T>` → `&[T]`, nested match → `?`), security audit (cargo-audit, dependency hygiene,
-  unsafe review, input validation, crypto primitives), and review-comment style.
-  ALWAYS use when reviewing Rust pull requests, diffs, or existing modules.
-  ALWAYS use when debugging Rust bugs — panics, memory errors, deadlocks, slow async, flaky tests.
-  ALWAYS use when profiling Rust performance — finding bottlenecks, measuring, optimizing.
+  Rust code inspection — reviewing PRs, debugging bugs, profiling performance.
+  Covers review checklists by area (architecture, ownership, control flow, async,
+  error handling, unsafe, testing, security, perf), severity classification, the
+  debugging playbook (panic, OOM, deadlock, slow async, flaky test, Miri UB,
+  sanitizers), the profiling playbook (criterion, flamegraph, perf, DHAT,
+  tokio-console, samply), performance pitfall catalog, refactor templates, security
+  audit (cargo-audit, unsafe review, input validation, crypto), and review-comment
+  style.
+  ALWAYS use when reviewing Rust PRs, diffs, or existing modules.
+  ALWAYS use when debugging Rust bugs (panics, memory errors, deadlocks, slow async, flaky).
+  ALWAYS use when profiling Rust performance.
   ALWAYS use when asked to audit, critique, review, debug, or profile Rust code.
-  For designing from scratch load rust-planning; for writing code load rust-implementing.
+  For designing load rust-planning; for writing load rust-implementing.
 ---
 
 # Rust — Reviewing Skill
@@ -379,6 +377,257 @@ When writing review comments, classify each finding. Block-severity findings pre
 - [ ] `HashMap` hasher choice (default `SipHash` is slow; `ahash` / `fxhash` for trusted input)
 - [ ] `Vec::retain` / `drain_filter` instead of `filter + collect` when modifying in place
 - [ ] Serde avoided for micro-formats (bincode, postcard, or hand-rolled)
+
+---
+
+## 7b. Top BAD/GOOD Pairs — Flag-if-Seen Catalog
+
+Twelve pairs drawn from [anti-patterns-catalog.md](anti-patterns-catalog.md), [debugging-playbook.md](debugging-playbook.md), [security-audit.md](security-audit.md), and [test-quality-review.md](test-quality-review.md). These are the highest-frequency review catches — kept in the hub so they fire during the validating-written-code reasoning step.
+
+### 1. `MutexGuard` held across `.await` (deadlock)
+
+```rust
+// BAD: std::sync::MutexGuard is !Send; holding it across .await makes the
+// future !Send. Worse, on a current-thread runtime it DEADLOCKS if another
+// task on the same thread tries to acquire the lock while this task sleeps.
+async fn update(state: Arc<Mutex<State>>) {
+    let mut guard = state.lock().unwrap();
+    do_async_work().await;               // <-- guard held across await
+    guard.value += 1;
+}
+```
+
+```rust
+// GOOD: clone what you need, drop the guard, then await. Or use
+// tokio::sync::Mutex if the lock MUST be held across .await.
+async fn update(state: Arc<Mutex<State>>) {
+    let snapshot = { state.lock().unwrap().value };
+    let result = do_async_work_with(snapshot).await;
+    state.lock().unwrap().value = result;
+}
+```
+
+### 2. Blocking call in an async function
+
+```rust
+// BAD: std::thread::sleep / std::fs::read_to_string / sync reqwest blocks
+// the Tokio worker thread. Other tasks on that worker starve.
+async fn load_config() -> Config {
+    let s = std::fs::read_to_string("config.toml").unwrap();
+    std::thread::sleep(Duration::from_millis(100));  // NEVER in async
+    toml::from_str(&s).unwrap()
+}
+```
+
+```rust
+// GOOD: use tokio equivalents, or spawn_blocking for CPU-heavy / unavoidable
+// blocking calls.
+async fn load_config() -> anyhow::Result<Config> {
+    let s = tokio::fs::read_to_string("config.toml").await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    Ok(toml::from_str(&s)?)
+}
+```
+
+### 3. `.unwrap()` in a request handler
+
+```rust
+// BAD: panic in production. Request aborts without a proper status code;
+// the panic might take down the worker under some runtimes.
+async fn get_user(Path(id): Path<i64>, State(db): State<PgPool>) -> Json<User> {
+    let user = sqlx::query_as!(User, "SELECT * FROM users WHERE id = $1", id)
+        .fetch_one(&db)
+        .await
+        .unwrap();                 // <-- user not found -> panic
+    Json(user)
+}
+```
+
+```rust
+// GOOD: typed error + IntoResponse gives proper HTTP semantics.
+async fn get_user(
+    Path(id): Path<i64>, State(db): State<PgPool>,
+) -> Result<Json<User>, ApiError> {
+    let user = sqlx::query_as!(User, "SELECT * FROM users WHERE id = $1", id)
+        .fetch_optional(&db)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(user))
+}
+```
+
+### 4. Fire-and-forget `tokio::spawn`
+
+```rust
+// BAD: if the task panics, the error is silently swallowed. If it needs
+// to finish before shutdown, it doesn't. No observability.
+tokio::spawn(async move { process_batch(items).await });
+```
+
+```rust
+// GOOD: track handles via JoinSet; log failures; participate in shutdown.
+let mut set = tokio::task::JoinSet::new();
+set.spawn(async move { process_batch(items).await });
+while let Some(res) = set.join_next().await {
+    if let Err(e) = res? { tracing::error!(?e, "batch failed"); }
+}
+```
+
+### 5. External call without a timeout
+
+```rust
+// BAD: a slow or hung endpoint stalls the handler indefinitely. Thread
+// or task is stuck; upstream queue backs up.
+let body = reqwest::get("https://api.example.com/x").await?.text().await?;
+```
+
+```rust
+// GOOD: every external boundary has an explicit timeout.
+let body = tokio::time::timeout(
+    Duration::from_secs(5),
+    reqwest::get("https://api.example.com/x"),
+).await??.text().await?;
+```
+
+### 6. `unsafe` block without `// SAFETY:` comment
+
+```rust
+// BAD: no justification for why the invariants hold. Reviewer cannot
+// verify correctness. Future refactor breaks assumptions silently.
+let slice: &[u8] = unsafe { std::slice::from_raw_parts(ptr, len) };
+```
+
+```rust
+// GOOD: every unsafe block has a SAFETY comment explaining WHY it's sound.
+// SAFETY: `ptr` was obtained from `buf.as_ptr()` above and `len` from
+// `buf.len()`; both are valid for the lifetime of `buf` which outlives
+// `slice`. The underlying bytes are initialized and not mutated here.
+let slice: &[u8] = unsafe { std::slice::from_raw_parts(ptr, len) };
+```
+
+### 7. SQL via string interpolation
+
+```rust
+// BAD: classic SQL injection. User input becomes SQL.
+let q = format!("SELECT * FROM users WHERE email = '{}'", email);
+sqlx::query(&q).fetch_one(&pool).await?;
+```
+
+```rust
+// GOOD: parameterized query — sqlx binds the value, never concatenates.
+sqlx::query!("SELECT * FROM users WHERE email = $1", email)
+    .fetch_one(&pool).await?;
+```
+
+### 8. Command injection via `sh -c`
+
+```rust
+// BAD: user_pattern is interpreted as shell syntax.
+// `user_pattern = "; rm -rf /"` → catastrophic.
+Command::new("sh").arg("-c")
+    .arg(format!("grep {} /var/log/app.log", user_pattern))
+    .output()?;
+```
+
+```rust
+// GOOD: direct exec passes the argument literally; no shell parsing.
+Command::new("grep")
+    .arg(user_pattern)
+    .arg("/var/log/app.log")
+    .output()?;
+```
+
+### 9. `String::from_utf8_unchecked` on untrusted bytes
+
+```rust
+// BAD: non-UTF-8 bytes produce a String with invalid UTF-8 — UB on
+// any later `.chars()` / slice / Display call.
+let s = unsafe { String::from_utf8_unchecked(user_bytes) };
+```
+
+```rust
+// GOOD: validate at the boundary. Handle invalid input explicitly.
+let s = String::from_utf8(user_bytes)
+    .map_err(|e| ValidationError::InvalidUtf8(e))?;
+```
+
+### 10. Wall-clock dependency in a test
+
+```rust
+// BAD: fails on slow CI, passes locally. Correctness depends on the
+// real clock advancing faster than the sleep.
+#[tokio::test]
+async fn token_expires() {
+    let token = Token::new();
+    std::thread::sleep(Duration::from_secs(1));  // FLAKY
+    assert!(token.is_expired());
+}
+```
+
+```rust
+// GOOD: tokio::time::pause() freezes the Tokio clock; advance it
+// deterministically.
+#[tokio::test]
+async fn token_expires() {
+    tokio::time::pause();
+    let token = Token::new();
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(token.is_expired());
+}
+```
+
+### 11. Sleep-for-async-synchronization in a test
+
+```rust
+// BAD: races between spawned task and the assertion. Passes when the
+// machine is fast; fails under load.
+#[tokio::test]
+async fn eventually_processed() {
+    let tx = start_processor().await;
+    tx.send(item).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;  // FLAKY
+    assert_eq!(get_state(), State::Processed);
+}
+```
+
+```rust
+// GOOD: await an explicit completion signal. Deterministic.
+#[tokio::test]
+async fn processed() {
+    let (tx, mut done) = start_processor().await;
+    tx.send(item).await.unwrap();
+    done.recv().await.unwrap();
+    assert_eq!(get_state(), State::Processed);
+}
+```
+
+### 12. Test asserts implementation detail, not behavior
+
+```rust
+// BAD: couples the test to a specific call sequence. Any internal
+// refactor breaks the test even though behavior is unchanged.
+#[test]
+fn processes_order() {
+    let mut mock = MockRepo::new();
+    mock.expect_internal_lookup().times(1);      // implementation detail
+    mock.expect_validate().times(1);              // implementation detail
+    mock.expect_save().times(1);
+    let uc = PlaceOrderUseCase::new(mock);
+    uc.execute(input());
+}
+```
+
+```rust
+// GOOD: assert the observable outcome. Internals are free to change.
+#[test]
+fn saves_order_on_success() {
+    let mut mock = MockRepo::new();
+    mock.expect_save().times(1).returning(|_| Ok(()));
+    let uc = PlaceOrderUseCase::new(mock);
+    let out = uc.execute(valid_input());
+    assert!(matches!(out, Ok(OrderResult::Placed(_))));
+}
+```
 
 ---
 

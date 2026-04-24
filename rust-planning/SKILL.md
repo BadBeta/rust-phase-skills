@@ -1,24 +1,19 @@
 ---
 name: rust-planning
 description: >
-  Rust architectural planning — the decisions made BEFORE writing code. Covers project
-  layout (single crate, lib+bin, workspace), crate boundaries (domain/app/infra),
-  dependency direction, trait-based DI, hexagonal/onion/clean/DDD architecture, error
-  strategy (thiserror vs anyhow, multi-layer translation, hand-rolled Error+ErrorKind),
-  async strategy (runtime choice, actor vs channels, sync vs async), resilience (circuit
-  breakers, retries, timeouts, graceful shutdown), unsafe strategy (when unsafe is
-  justified, FFI architecture), testing strategy (test pyramid, mocking boundaries,
-  property-test and fuzz scope), data strategy (SQL vs KV vs embedded stores, migration
-  strategy), services architecture (monolith vs microservices, kernel pattern), growing
-  from small to large, feature flags, Cargo workspace organization, and architectural
-  anti-patterns. Covers Rust 2024 edition.
+  Rust architectural planning — decisions made BEFORE writing code. Covers project
+  layout (single crate, lib+bin, Cargo workspace), crate boundaries, dependency
+  direction, trait-based DI, hexagonal/DDD architecture, error strategy, async
+  strategy (runtime choice, actor vs channels), resilience, unsafe/FFI strategy,
+  test strategy (pyramid, mocking, property/fuzz), data strategy, feature flags,
+  and architectural anti-patterns. Rust 2024.
   ALWAYS use when designing, architecting, structuring, or planning a Rust project.
-  ALWAYS use when choosing between single-crate / lib+bin / workspace layouts.
-  ALWAYS use when deciding crate boundaries, trait placement, or dependency direction.
-  ALWAYS use when starting a new Rust project, a major refactor, or a bounded context.
-  ALWAYS use when choosing async runtime, channel topology, or supervision/shutdown shape.
-  For writing the code itself, also load rust-implementing.
-  For reviewing, debugging, or profiling existing code, load rust-reviewing instead.
+  ALWAYS use when choosing between single-crate, lib+bin, or workspace layouts.
+  ALWAYS use when deciding crate boundaries, trait placement, or dep direction.
+  ALWAYS use when starting a new Rust project or major refactor.
+  ALWAYS use when choosing async runtime or supervision/shutdown shape.
+  For writing code, load rust-implementing. For reviewing/debugging/profiling,
+  load rust-reviewing.
 ---
 
 # Rust — Planning Skill

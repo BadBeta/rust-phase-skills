@@ -2,25 +2,21 @@
 name: rust-implementing
 globs: "*.rs"
 description: >
-  Rust for idiomatic implementation — the decision tables, templates, and anti-patterns that
-  make Claude write idiomatic, best-practices Rust at the moment of writing. Covers the full
-  daily-coding toolkit: ownership and borrowing, pattern matching, `?` and error propagation,
-  iterators and closures, `with`/`match`/`let-else`/if-let chains, trait design, generics
-  vs `dyn Trait`, `impl Trait`, Pin/Unpin and async, Tokio primitives, channels, `Arc<Mutex>`
-  patterns, serde derives, macros (declarative + procedural), FFI patterns, web APIs
-  (axum, tower), database access (sqlx, diesel), CLI tooling (clap), WASM/GUI, and
-  test-driven development with cargo test, mockall, insta, proptest, and cargo-fuzz.
-  Rust 2024 edition.
+  Rust for idiomatic implementation — decision tables, templates, and anti-patterns
+  that make Claude write idiomatic Rust at the moment of writing. Covers ownership,
+  pattern matching, `?` error propagation, iterators, trait design, generics vs
+  `dyn Trait`, Pin/Unpin, Tokio, channels, `Arc<Mutex>` patterns, serde, macros,
+  FFI, axum, sqlx/diesel, clap, WASM/GUI, GPU/wgpu, and TDD with mockall, insta,
+  proptest, cargo-fuzz. Rust 2024.
   ALWAYS use when writing Rust code.
-  ALWAYS use when deciding between control-flow constructs (match/if-let/let-else/`?`).
+  ALWAYS use when deciding between match/if-let/let-else/`?`.
   ALWAYS use when deciding between `impl Trait`, `dyn Trait`, and generics.
   ALWAYS use when deciding between `Arc<Mutex<T>>` and channels.
   ALWAYS use when writing async Rust (Tokio, channels, spawn, select).
-  ALWAYS use when writing tests, mocks, or practicing TDD in Rust.
+  ALWAYS use when writing tests, mocks, or practicing TDD.
   ALWAYS use when refactoring Rust toward idiomatic form.
-  For upfront architecture/design (project layout, crate boundaries, error strategy, async strategy)
-  also load rust-planning; this skill defers deep architecture decisions to that skill.
-  For reviewing, debugging, or profiling existing code, load rust-reviewing.
+  For architecture/design, load rust-planning. For reviewing/debugging/profiling,
+  load rust-reviewing.
 ---
 
 # Rust — Implementing Skill
