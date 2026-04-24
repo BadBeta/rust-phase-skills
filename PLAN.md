@@ -82,13 +82,44 @@ Each SKILL.md links the other two skills with brief summaries ("load X for Y"). 
 
 Matching elixir pattern: each skill dir copied to `~/.claude/skills/<skill-name>/`.
 
-## Work plan
+## Work plan — STATUS
 
-1. Skeleton + this plan (done)
-2. Three SKILL.md hubs (sequential, hand-authored)
-3. Subskill migration from existing rust-programming (hand-authored, file by file)
-4. New authoring: debugging-playbook, security-audit, refactor-templates, test-quality-review
-5. Deploy + commit
+1. ✅ **Skeleton + this plan** — done
+2. ✅ **Three SKILL.md hubs** — done (hand-authored)
+   - rust-planning/SKILL.md: 1082 lines (new authoring)
+   - rust-implementing/SKILL.md: 2901 lines (migrated from old SKILL.md + new master "which construct?" decision table)
+   - rust-reviewing/SKILL.md: 777 lines (new authoring)
+3. ✅ **Subskill migration** — done (every source file mapped to a destination)
+4. ✅ **New authoring for rust-reviewing** — done
+   - debugging-playbook.md (446 lines)
+   - profiling-playbook.md (380 lines)
+   - performance-catalog.md (403 lines)
+   - security-audit.md (444 lines)
+   - test-quality-review.md (572 lines, first-class)
+   - refactor-templates.md (531 lines)
+5. ✅ **Planning strategy subskills** — done (7 files, ~1600 lines total)
+   - workspace-layout.md, async-strategy.md, error-strategy.md, unsafe-strategy.md
+   - data-strategy.md, test-strategy.md (first-class), distributed-rust.md
+6. ✅ **Deploy to ~/.claude/skills/** — done (all three phase skills active and discoverable)
+
+## Final line counts (committed)
+
+| Skill | Files | Lines |
+|---|---|---|
+| rust-planning | 11 | 11,891 |
+| rust-implementing | 18 | ~37,000 |
+| rust-reviewing | 8 | 3,802 |
+| **Total** | **37** | **~54,700** |
+
+**Content preservation verified:** 48,321 old-skill lines → 54,700+ new-skill lines. All source content migrated. New authoring: ~6,500 lines (three hub SKILL.md intros/rules/decision tables + rust-reviewing depth files + rust-planning strategy files).
+
+## Open items (post-deployment)
+
+- Old `rust-programming` skill still deployed in parallel → decide: remove, rename, or keep as fallback
+- Further refinement opportunities documented per-skill (each `*-strategy.md` file has room to grow as use surfaces specifics)
+- Potential subsequent work:
+  - Trim rust-implementing/SKILL.md further (currently 2901 lines; could shrink by moving Tracing & Observability fully to observability.md and removing lingering architecture/workspace detail)
+  - Extract security parts from rust-implementing/web-apis.md to rust-reviewing/security-audit.md as an appendix
 
 ## Ground rules
 
