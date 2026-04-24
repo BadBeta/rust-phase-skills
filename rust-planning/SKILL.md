@@ -1040,7 +1040,384 @@ Anti-patterns specific to **architectural decisions**. For implementation-level 
 
 ---
 
-## 16. Architectural Paradigms Not Covered Here
+## 16. Architectural BAD/GOOD Pairs
+
+Fifteen concrete anti-patterns that Claude commonly produces despite the rules above. Each pair shows the rule firing at decision-time. Deliberately overlaps with §1 Rules and §15 Anti-Patterns Catalog — these are the critical cases that benefit from side-by-side code.
+
+### 1. Dependency direction violation
+
+```toml
+# BAD: domain/Cargo.toml — framework leaks into the domain layer
+[dependencies]
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio"] }
+axum = "0.8"
+```
+
+```toml
+# GOOD: domain/Cargo.toml — zero infrastructure deps
+[dependencies]
+uuid = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+# Database/HTTP/queue crates live in infra/Cargo.toml, not here.
+```
+
+### 2. Trait defined next to its implementation
+
+```rust
+// BAD: infra/postgres.rs defines BOTH the trait AND the impl.
+// Now the trait is an implementation detail of Postgres — every
+// consumer of the trait pulls in sqlx transitively.
+pub trait OrderRepository { /* ... */ }
+impl OrderRepository for PgOrderRepository { /* ... */ }
+```
+
+```rust
+// GOOD: domain/ports.rs owns the trait; infra/postgres.rs implements.
+// domain/ports.rs
+pub trait OrderRepository {
+    async fn save(&self, order: &Order) -> Result<(), RepoError>;
+}
+// infra/postgres.rs
+use domain::ports::OrderRepository;
+pub struct PgOrderRepository { pool: PgPool }
+impl OrderRepository for PgOrderRepository { /* ... */ }
+```
+
+### 3. `Box<dyn Error>` in a published library API
+
+```rust
+// BAD: caller can't pattern-match, can't extract typed data, can't
+// distinguish recoverable from fatal. Hides all variants behind a trait.
+pub fn parse(s: &str) -> Result<Config, Box<dyn std::error::Error>> { /* ... */ }
+```
+
+```rust
+// GOOD: typed enum with meaningful variants. Caller branches on kind.
+#[derive(thiserror::Error, Debug)]
+#[non_exhaustive]
+pub enum ParseError {
+    #[error("line {line}: unexpected token {token:?}")]
+    Syntax { line: u32, token: String },
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+pub fn parse(s: &str) -> Result<Config, ParseError> { /* ... */ }
+```
+
+### 4. `Result<T, String>` for errors
+
+```rust
+// BAD: string errors lose all structure. Caller parses the message
+// to decide what to do — fragile, unstable across versions.
+pub fn load() -> Result<Config, String> {
+    std::fs::read_to_string("config.toml").map_err(|e| e.to_string())
+}
+```
+
+```rust
+// GOOD: typed error preserves cause chain, variant, structured fields.
+#[derive(thiserror::Error, Debug)]
+pub enum LoadError {
+    #[error("reading {path}")]
+    Io { path: PathBuf, #[source] source: std::io::Error },
+}
+pub fn load() -> Result<Config, LoadError> { /* ... */ }
+```
+
+### 5. Hidden global mutable service state
+
+```rust
+// BAD: global mutable singleton. Cannot swap for tests. Cannot have
+// two instances per process. Ordering bugs on first use.
+use std::sync::{LazyLock, Mutex};
+static POOL: LazyLock<Mutex<Option<PgPool>>> = LazyLock::new(|| Mutex::new(None));
+
+pub async fn init(url: &str) {
+    *POOL.lock().unwrap() = Some(PgPool::connect(url).await.unwrap());
+}
+```
+
+```rust
+// GOOD: constructor injection. Explicit ownership, trivially testable.
+pub struct OrderService { pool: Arc<PgPool> }
+impl OrderService {
+    pub fn new(pool: Arc<PgPool>) -> Self { Self { pool } }
+}
+// main.rs wires everything once:
+let pool = Arc::new(PgPool::connect(&cfg.db_url).await?);
+let orders = OrderService::new(pool.clone());
+```
+
+### 6. Feature flags in domain logic
+
+```rust
+// BAD: compile-time conditional business logic. Domain changes
+// shape per feature set. Tests must enumerate features.
+pub fn charge(card: &Card, amount: Money) -> Result<PaymentId, Error> {
+    #[cfg(feature = "stripe")]  { stripe::charge(card, amount) }
+    #[cfg(feature = "paypal")]  { paypal::charge(card, amount) }
+    #[cfg(not(any(feature = "stripe", feature = "paypal")))]
+    { panic!("no payment processor configured") }
+}
+```
+
+```rust
+// GOOD: domain defines the trait; feature gates live in the
+// composition root (main.rs) and pick the concrete impl.
+pub trait PaymentProcessor { /* ... */ }
+
+// main.rs
+#[cfg(feature = "stripe")]
+let processor: Arc<dyn PaymentProcessor> = Arc::new(StripeProcessor::new());
+#[cfg(feature = "paypal")]
+let processor: Arc<dyn PaymentProcessor> = Arc::new(PayPalProcessor::new());
+```
+
+### 7. Passing the whole `&Config` to a service
+
+```rust
+// BAD: EmailService's dependencies are opaque. Reading the struct
+// you can't tell what it actually uses. Testing requires a full Config.
+pub struct EmailService { config: Arc<Config> }
+impl EmailService {
+    pub fn new(config: Arc<Config>) -> Self { Self { config } }
+    pub fn send(&self, to: &str, msg: &str) -> Result<()> {
+        smtp_send(&self.config.smtp_url, &self.config.from_addr, to, msg)
+    }
+}
+```
+
+```rust
+// GOOD: inject only what's used. Dependencies are self-documenting.
+// Tests construct with just smtp_url + from_addr.
+pub struct EmailService { smtp_url: String, from_addr: String }
+impl EmailService {
+    pub fn new(smtp_url: impl Into<String>, from_addr: impl Into<String>) -> Self {
+        Self { smtp_url: smtp_url.into(), from_addr: from_addr.into() }
+    }
+    pub fn send(&self, to: &str, msg: &str) -> Result<()> {
+        smtp_send(&self.smtp_url, &self.from_addr, to, msg)
+    }
+}
+```
+
+### 8. Business logic in an HTTP handler
+
+```rust
+// BAD: handler contains pricing + validation + persistence. Untestable
+// without axum. Can't be called from a background job or CLI binary.
+async fn place_order(State(db): State<PgPool>, Json(req): Json<OrderReq>) -> Response {
+    if req.items.is_empty() { return bad_request("no items"); }
+    let total: Decimal = req.items.iter().map(|i| i.price * i.qty).sum();
+    let tax = total * Decimal::new(7, 2);
+    sqlx::query!("INSERT INTO orders ...").execute(&db).await.unwrap();
+    Json(OrderResp { total: total + tax }).into_response()
+}
+```
+
+```rust
+// GOOD: handler is a thin adapter. Use case contains the logic.
+async fn place_order(
+    State(uc): State<Arc<PlaceOrderUseCase>>, Json(req): Json<OrderReq>,
+) -> Result<Json<OrderResp>, ApiError> {
+    let out = uc.execute(req.into()).await?;
+    Ok(Json(out.into()))
+}
+// use_case.rs — pure, testable, callable from HTTP or CLI
+pub struct PlaceOrderUseCase<R: OrderRepository> { orders: R, pricer: OrderPricer }
+```
+
+### 9. Fire-and-forget `tokio::spawn`
+
+```rust
+// BAD: handle dropped — if the task panics, the error is swallowed
+// and nothing else notices. Task also leaks if the runtime outlives
+// the expected completion.
+tokio::spawn(async move {
+    process_batch(items).await;
+});
+```
+
+```rust
+// GOOD: track handles in a JoinSet or store them in your state.
+let mut set = tokio::task::JoinSet::new();
+set.spawn(async move { process_batch(items).await });
+
+while let Some(result) = set.join_next().await {
+    if let Err(e) = result? { tracing::error!(?e, "batch failed"); }
+}
+```
+
+### 10. No timeout on an external call
+
+```rust
+// BAD: a slow external host can block this call indefinitely.
+// In a web handler, the request hangs; in a worker, it stalls the queue.
+let body = reqwest::get("https://api.example.com/data").await?.text().await?;
+```
+
+```rust
+// GOOD: wrap every outbound call with an explicit timeout.
+let body = tokio::time::timeout(
+    Duration::from_secs(5),
+    reqwest::get("https://api.example.com/data"),
+).await??
+.text()
+.await?;
+```
+
+### 11. Non-idempotent retryable operation
+
+```rust
+// BAD: webhook handler or Oban/queue-consumer. Retry duplicates the
+// charge — classic billing bug.
+async fn handle_webhook(event: StripeEvent, db: &PgPool) -> Result<()> {
+    let amount = event.amount;
+    charge_customer(event.customer_id, amount).await?;  // Retried? → charged twice.
+    Ok(())
+}
+```
+
+```rust
+// GOOD: idempotency key de-duplicates retries.
+async fn handle_webhook(event: StripeEvent, db: &PgPool) -> Result<()> {
+    let mut tx = db.begin().await?;
+    let inserted = sqlx::query!(
+        "INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING",
+        event.id,
+    ).execute(&mut *tx).await?.rows_affected();
+    if inserted == 0 { return Ok(()); }  // Already processed.
+    charge_customer(event.customer_id, event.amount).await?;
+    tx.commit().await?;
+    Ok(())
+}
+```
+
+### 12. Circuit breaker in domain code
+
+```rust
+// BAD: domain logic knows about network failures, retries, breakers.
+// The business rule is polluted with infrastructure concerns.
+impl OrderService {
+    pub async fn fulfill(&self, id: OrderId) -> Result<(), DomainError> {
+        for attempt in 0..3 {
+            match self.shipping.ship(id).await {
+                Ok(_) => return Ok(()),
+                Err(_) if attempt < 2 => tokio::time::sleep(backoff(attempt)).await,
+                Err(_) => return Err(DomainError::ShippingDown),
+            }
+        }
+        unreachable!()
+    }
+}
+```
+
+```rust
+// GOOD: resilience wraps the infra adapter, not the domain.
+// domain: ResilientShippingGateway impls ShippingGateway, delegates to
+// inner with retries/circuit-break. Domain sees only ShippingGateway.
+pub struct ResilientShipping<S: ShippingGateway> { inner: S, breaker: CircuitBreaker }
+impl<S: ShippingGateway> ShippingGateway for ResilientShipping<S> {
+    async fn ship(&self, id: OrderId) -> Result<(), GatewayError> {
+        self.breaker.call(|| retry_with_backoff(|| self.inner.ship(id))).await
+    }
+}
+// OrderService still just calls `self.shipping.ship(id).await?` — clean.
+```
+
+### 13. Unit test requires a real database
+
+```rust
+// BAD: any change to the use case forces a DB round-trip. Slow suite,
+// flaky on CI, hides logic bugs behind environment issues.
+#[tokio::test]
+async fn places_order() {
+    let pool = PgPool::connect(&std::env::var("DATABASE_URL").unwrap())
+        .await.unwrap();
+    let uc = PlaceOrderUseCase::new(pool);
+    assert!(uc.execute(input()).await.is_ok());
+}
+```
+
+```rust
+// GOOD: inject the trait, mock it for unit tests. Reserve real-DB
+// tests for integration-level paths (#[sqlx::test] or testcontainers).
+#[tokio::test]
+async fn places_order_when_repo_saves() {
+    let mut mock = MockOrderRepo::new();
+    mock.expect_save().times(1).returning(|_| Ok(()));
+    let uc = PlaceOrderUseCase::new(mock);
+    assert!(uc.execute(input()).await.is_ok());
+}
+```
+
+### 14. Domain entity with framework annotations
+
+```rust
+// BAD: domain type coupled to sqlx AND serde AND the HTTP response
+// shape. Change the DB schema → change domain. Change the JSON schema
+// → change domain. Domain now knows about transport/storage details.
+#[derive(sqlx::FromRow, serde::Serialize, serde::Deserialize)]
+pub struct Order {
+    #[sqlx(rename = "order_id")]
+    pub id: i64,
+    #[serde(rename = "customerId")]
+    pub customer: i64,
+    pub status: String,
+}
+```
+
+```rust
+// GOOD: domain is plain Rust. Separate DTOs in infra (for DB) and
+// api (for HTTP). Translate at the adapter.
+// domain/order.rs — framework-free
+pub struct Order { pub id: OrderId, pub customer: CustomerId, pub status: OrderStatus }
+
+// infra/postgres.rs
+#[derive(sqlx::FromRow)]
+struct OrderRow { order_id: i64, customer_id: i64, status: String }
+impl From<OrderRow> for Order { fn from(r: OrderRow) -> Self { /* ... */ } }
+
+// api/dto.rs
+#[derive(serde::Serialize)]
+struct OrderResponse { id: String, customer_id: String, status: String }
+impl From<Order> for OrderResponse { fn from(o: Order) -> Self { /* ... */ } }
+```
+
+### 15. `new()` panics on config / resource error
+
+```rust
+// BAD: panic on startup → no Result surface, no graceful handling,
+// no way for tests to exercise the failure path.
+impl DbClient {
+    pub fn new(url: &str) -> Self {
+        let pool = PgPool::connect_lazy(url).expect("bad DATABASE_URL");
+        Self { pool }
+    }
+}
+```
+
+```rust
+// GOOD: return Result. main.rs decides whether to panic, retry, or
+// degrade; tests can cover the error branch.
+#[derive(thiserror::Error, Debug)]
+pub enum InitError {
+    #[error("database: {0}")]
+    Database(#[from] sqlx::Error),
+}
+
+impl DbClient {
+    pub fn new(url: &str) -> Result<Self, InitError> {
+        let pool = PgPool::connect_lazy(url)?;
+        Ok(Self { pool })
+    }
+}
+```
+
+---
+
+## 17. Architectural Paradigms Not Covered Here
 
 This skill assumes conventional application / service / library architectures with traits, generics, and the type system as the primary organizing mechanisms. A handful of domains use fundamentally different paradigms where this skill's rules apply only partially:
 
@@ -1055,7 +1432,7 @@ For these, load the relevant ecosystem documentation alongside this skill rather
 
 ---
 
-## 17. Related Skills
+## 18. Related Skills
 
 - **[rust-implementing](../rust-implementing/SKILL.md)** — The moment of writing code. Decision tables for `?` vs `match`, `impl Trait` vs `dyn Trait`, `Arc<Mutex>` vs channels. Idiomatic templates. TDD workflow. Anti-patterns Claude commonly produces.
 - **[rust-reviewing](../rust-reviewing/SKILL.md)** — Reviewing PRs, debugging bugs (panics, OOM, deadlock, UB), profiling (flamegraph, perf, DHAT, tokio-console).
@@ -1066,7 +1443,7 @@ For these, load the relevant ecosystem documentation alongside this skill rather
 
 ---
 
-## 17. References
+## 19. References
 
 **Rust language and ecosystem:**
 - [The Rust Programming Language](https://doc.rust-lang.org/book/) — official book
