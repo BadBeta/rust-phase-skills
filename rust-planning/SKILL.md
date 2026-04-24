@@ -206,6 +206,16 @@ Stage 4 (distributed): Multiple workspaces or separate repos, service contracts 
 - **Stage 2 → Stage 3**: compile times > 30s incremental, multiple teams owning distinct subsystems, need feature flags to ship different binaries, need to publish a crate independently.
 - **Stage 3 → Stage 4**: different languages required, compliance isolation, genuinely different scaling profiles per subsystem, separate deployment lifecycle.
 
+### 2.5 Plan document hygiene
+
+The plan (typically `PLAN.md` or `ARCHITECTURE.md`) is a working artifact during design. Once implementation begins, everything in the plan stays in the plan — never port citations, section numbers, or TDD step numbers into source comments.
+
+- **Section numbers renumber.** A `//! TDD'd by PLAN.md §8 tests #5-7` comment rots the moment §8 becomes §9.
+- **Skill citations leak scaffolding.** `//! Per rust-planning §16 BAD/GOOD #2` confuses readers who don't have the skill loaded, and revises when the skill revises.
+- **Process notes are not invariants.** "TDD'd by ..." describes how the code was written, not what it does. Invariants belong in doc comments; process belongs in the commit message or the plan.
+
+Rule of thumb: `grep -rn "PLAN\.md\|TDD'd\|rust-planning §\|rust-implementing §" src/` in a finished project should return zero hits. The plan document is the place for the citations; keep the source free of them. (See rust-reviewing §7b #17 and rust-implementing's BAD/GOOD for "Planning-artifact citations in source comments".)
+
 ---
 
 ## 3. Master "Planning Decision" Table
@@ -1483,6 +1493,32 @@ use domain::timeouts::REQUEST_TIMEOUT;
 let client = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
 tokio::time::timeout(REQUEST_TIMEOUT, db.query("...")).await?;
 ```
+
+**The `policy.rs` pattern — one module, all the knobs.** A single file that holds every tunable (timeouts, retry counts, redirect limits, user-agent strings, concurrency defaults) is more discoverable than scattering individual constants by topic. The module's own doc comment states the grep litmus — future contributors have a mechanical check to verify SSOT on their diff.
+
+```rust
+//! Single Source of Truth for policy constants.
+//!
+//! Every timeout, retry count, concurrency default, and wire-format
+//! string lives here. CLI flags may override at the call site — but
+//! the *default* lives only in this file.
+//!
+//! Litmus: `grep -rn "Duration::from" src/` returns hits only in this
+//! file and test fixtures.
+
+use std::time::Duration;
+
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub const DEFAULT_CONCURRENCY: usize = 16;
+pub const DEFAULT_MAX_RETRIES: u32 = 3;
+pub const INITIAL_BACKOFF: Duration = Duration::from_millis(250);
+pub const MAX_BACKOFF: Duration = Duration::from_secs(10);
+pub const REDIRECT_LIMIT: u8 = 10;
+pub const USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
+```
+
+Why one file rather than per-topic constants next to the code that uses them: the operator who changes the SLA thinks "retry and timeout," not "the retry constant is in retry.rs and the timeout is in client.rs." One file is the contract.
 
 ---
 

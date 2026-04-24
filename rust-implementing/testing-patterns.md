@@ -589,6 +589,65 @@ fn test_with_shared_helpers() {
 }
 ```
 
+### In-Crate Fakes Alongside the Port
+
+When the fake implements a trait defined in the same crate, put it in a
+`#[cfg(test)] pub(crate) mod testing` inside the port file. Every unit
+test in the crate can reach it through the usual module path; no
+separate test-support crate; no duplication across sibling tests.
+
+```rust
+// src/ports/http.rs
+#[async_trait]
+pub trait HttpClient: Send + Sync + 'static {
+    async fn fetch(&self, url: &Url) -> Result<Response, HttpError>;
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    //! In-crate fakes. Compiled only under `cargo test`; not part of
+    //! the public API. Integration tests that need a server use
+    //! wiremock; unit tests use this.
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    pub struct MockHttpClient {
+        responses: HashMap<Url, Response>,
+        calls: Mutex<Vec<Url>>,
+    }
+
+    impl MockHttpClient {
+        pub fn new() -> Self { /* ... */ }
+        pub fn with_ok(mut self, url: &str, status: u16) -> Self { /* ... */ }
+        pub fn calls_for(&self, url: &Url) -> usize { /* ... */ }
+    }
+
+    #[async_trait]
+    impl HttpClient for MockHttpClient {
+        async fn fetch(&self, url: &Url) -> Result<Response, HttpError> {
+            self.calls.lock().unwrap().push(url.clone());
+            self.responses.get(url).cloned()
+                .map(Ok).unwrap_or(Err(HttpError::Other("unstubbed".into())))
+        }
+    }
+}
+
+// src/checker/check.rs — a unit test imports the in-crate fake:
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::http::testing::MockHttpClient;
+    // ...
+}
+```
+
+Why `pub(crate)` and not `pub`: the fake is a testing tool, not API.
+Why `#[cfg(test)]` and not behind a feature flag: unless integration
+tests in `tests/` also need it, `#[cfg(test)]` keeps it out of the
+public surface entirely. Promote to a `testing` feature only when a
+second crate (or integration tests) needs access.
+
 ### Doc Tests
 
 ```rust
@@ -1534,6 +1593,29 @@ async fn retry_with_backoff() {
     ).await;
 
     assert!(result.is_err()); // Timed out
+}
+
+// Verifying a backoff *schedule* (not just that a timeout fires) —
+// use `start_paused = true` plus Instant::now().elapsed() to assert
+// the exact sum of sleeps. This pins the backoff curve against
+// regression, not just "eventually times out".
+#[tokio::test(start_paused = true)]
+async fn backoff_schedule_is_deterministic() {
+    let start = time::Instant::now();
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let calls_c = calls.clone();
+
+    retry(3, move |_| {
+        let calls = calls_c.clone();
+        async move {
+            let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n < 3 { Err("fail") } else { Ok(()) }
+        }
+    }).await.unwrap();
+
+    // Succeeded on the 3rd attempt → two sleeps happened:
+    //   INITIAL + INITIAL*2 = 750ms given INITIAL=250ms
+    assert_eq!(start.elapsed(), Duration::from_millis(250 + 500));
 }
 ```
 

@@ -78,6 +78,7 @@ The core SKILL.md carries the always-loaded rules, severity guidance, workflows,
 14. **ALWAYS check for lifetime/borrow smells**: `'static` bounds that shouldn't be needed (suggest refactoring), self-referential structs (suggest `Pin` / indices), lifetimes elided in ways that obscure relationships.
 15. **ALWAYS check async correctness**: `MutexGuard` across `.await`, blocking calls in async, missed `Send` bounds, fire-and-forget `tokio::spawn`, missing timeout on external calls.
 16. **ALWAYS apply the Single Source of Truth litmus test**: for each non-trivial fact the diff introduces (a validation rule, a magic value, a type declaration, a version pin, a shared constant), ask *"if this fact changes, how many files do I have to update?"* If the answer is greater than 1, flag an SSOT violation and point to the authoritative location — domain constructor, shared `const`, `[workspace.dependencies]`, or a single owning crate. SSOT violations are drift-in-waiting and usually ship as bugs the next time the fact updates.
+17. **ALWAYS scan for AI-generated-code tells that tooling does not catch** — `unwrap_or_else(|_| silent_default)` for provably-infallible operations (bug trap), dead match arms for "impossible" enum variants (comment admits it, then picks a nonsense mapping), `// SAFETY:` on code with no `unsafe` block, skill-section / PLAN.md citations in `//!` / `///` comments, cargo-culted deps or feature flags declared but never imported, and three copies of the same test fixture across sibling modules. `rustfmt` and `clippy` do not see these. See §7b pairs 14–17.
 
 ---
 
@@ -274,6 +275,7 @@ When writing review comments, classify each finding. Block-severity findings pre
 - [ ] Composition root (`main.rs`) is the only place that names all concrete types
 - [ ] No global mutable state / `LazyLock<Mutex<T>>` / `lazy_static!` for mutable services
 - [ ] No `Box<dyn Error>` in public library APIs
+- [ ] Every declared dependency and every enabled feature in `Cargo.toml` is actually used in source. `cargo-udeps` or a quick grep catches cargo-culted deps (e.g. `tokio` features `"signal"` / `"fs"` declared but never imported). Unused deps bloat builds, confuse readers, and accumulate advisories.
 - [ ] **Single Source of Truth** — apply the litmus test: *"if this fact changes, how many files do I have to update?"* Answer should be 1 (or 1-plus-compiler-enforced-callers). Specifically check:
   - [ ] No duplicated validation rules across layers (API validator + domain + DB CHECK all encoding the same invariant)
   - [ ] No magic values as literals in multiple files (should be `const` / `static`)
@@ -391,7 +393,7 @@ When writing review comments, classify each finding. Block-severity findings pre
 
 ## 7b. Top BAD/GOOD Pairs — Flag-if-Seen Catalog
 
-Twelve pairs drawn from [anti-patterns-catalog.md](anti-patterns-catalog.md), [debugging-playbook.md](debugging-playbook.md), [security-audit.md](security-audit.md), and [test-quality-review.md](test-quality-review.md). These are the highest-frequency review catches — kept in the hub so they fire during the validating-written-code reasoning step.
+Pairs drawn from [anti-patterns-catalog.md](anti-patterns-catalog.md), [debugging-playbook.md](debugging-playbook.md), [security-audit.md](security-audit.md), and [test-quality-review.md](test-quality-review.md), plus AI-specific tells (pairs 14–17) that tools don't catch. These are the highest-frequency review catches — kept in the hub so they fire during the validating-written-code reasoning step.
 
 ### 1. `MutexGuard` held across `.await` (deadlock)
 
@@ -666,6 +668,126 @@ fn saves_order_on_success() {
     assert!(matches!(out, Ok(OrderResult::Placed(_))));
 }
 ```
+
+### 14. Silent fallback for an infallible operation
+
+```rust
+// BAD: `to_string_pretty` on a struct of primitives + strings cannot
+// actually fail. The `unwrap_or_else` branch hides a future bug —
+// if someone adds a field whose Serialize impl *can* fail, the error
+// silently becomes "{}" in the report. CI passes; users see garbage.
+pub fn format(report: &Report) -> String {
+    let dto = build_dto(report);
+    serde_json::to_string_pretty(&dto).unwrap_or_else(|_| "{}".into())
+}
+```
+
+```rust
+// GOOD: assert the invariant with `.expect`. If the invariant ever
+// breaks the test suite or production panics loudly with a diagnostic,
+// instead of returning silent garbage.
+pub fn format(report: &Report) -> String {
+    let dto = build_dto(report);
+    serde_json::to_string_pretty(&dto)
+        .expect("DTO contains only primitives and strings — serialization is infallible")
+}
+```
+
+Review heuristic: `unwrap_or_else(|_| default)` where the error path has a comment like "shouldn't happen" or where the error can be proved impossible is a bug trap. Either the error is reachable (handle it properly) or it isn't (`.expect` with the reason). No third option.
+
+### 15. Dead match arm for an impossible enum variant
+
+```rust
+// BAD: the comment admits the branch is unreachable, and then picks
+// a nonsense mapping "just in case". If Io ever *does* reach this
+// function, users see broken links mislabeled as "invalid URL" — a
+// correctness bug masquerading as defensive code.
+fn error_to_kind(err: LinkCheckError) -> BrokenKind {
+    match err {
+        LinkCheckError::Dns { .. } => BrokenKind::Dns,
+        LinkCheckError::HttpStatus { status, .. } => BrokenKind::HttpStatus { status },
+        // ... other real arms ...
+        // Io only arises when reading files, never from checking a URL.
+        LinkCheckError::Io { .. } => BrokenKind::InvalidUrl,
+    }
+}
+```
+
+```rust
+// GOOD: narrow the match to the variants that actually occur; the
+// rest go in a diagnostic `unreachable!` that fires loudly if the
+// invariant ever breaks. Better still: split the error type so the
+// impossible variants can't be constructed here — but `unreachable!`
+// is the minimum-cost fix.
+fn error_to_kind(err: LinkCheckError) -> BrokenKind {
+    match err {
+        LinkCheckError::Dns { .. } => BrokenKind::Dns,
+        LinkCheckError::HttpStatus { status, .. } => BrokenKind::HttpStatus { status },
+        // ... other real arms ...
+        other => unreachable!(
+            "check_one only surfaces Dns/Tls/Timeout/HttpStatus/RedirectLoop; got {other:?}"
+        ),
+    }
+}
+```
+
+### 16. `// SAFETY:` comment on safe code
+
+```rust
+// BAD: there is no `unsafe` block here. The comment is either
+// misleading noise or cargo-culted from an AI training example of
+// real unsafe code. Reviewers have to re-verify there's no unsafe
+// they missed; future readers assume the author meant something.
+fn write_report(bytes: &[u8]) -> io::Result<()> {
+    // SAFETY: write_all through stdout, flushing on drop.
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(bytes)?;
+    handle.flush()
+}
+```
+
+```rust
+// GOOD: no marker, or a plain comment if context is genuinely useful.
+// `// SAFETY:` is reserved for `unsafe { ... }` blocks and `unsafe fn`.
+fn write_report(bytes: &[u8]) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    handle.write_all(bytes)?;
+    handle.flush()
+}
+```
+
+Review rule: `// SAFETY:` appears **only** next to `unsafe { ... }` / `unsafe fn`. Anywhere else, flag and delete.
+
+### 17. Planning-artifact citations leaking into source
+
+```rust
+// BAD: the source now references ephemeral planning artifacts. PLAN.md
+// will renumber; skill sections will be revised; "TDD'd by ..." was
+// never useful to a reader. A grep for "PLAN.md" in src/ should
+// return nothing.
+//! SSRF filter. Default-on per PLAN.md §9. TDD'd by PLAN.md §8 tests #5-7.
+//! Implementation follows rust-planning §16 BAD/GOOD #2 (hexagonal).
+
+/// PLAN.md §8 test #5: private IPv4 ranges and loopback blocked.
+#[test]
+fn ssrf_blocks_private_ipv4() { /* ... */ }
+```
+
+```rust
+// GOOD: docs describe the invariant that's in force now. The "why we
+// built it" discussion stays in the design doc where it can be
+// revised without touching source.
+//! SSRF filter. Default-on. Rejects private IPv4/IPv6 ranges,
+//! loopback, link-local, and the literal hostnames `localhost` /
+//! `0.0.0.0`. Callers opt out with `--allow-private`.
+
+#[test]
+fn ssrf_blocks_private_ipv4() { /* ... */ }
+```
+
+Review heuristic: `grep -rn "PLAN\.md\|TDD'd\|rust-planning §" src/` should return zero hits in shipped code. Citations belong in design docs (`PLAN.md`, `ARCHITECTURE.md`), never in `//!` / `///` comments.
 
 ---
 

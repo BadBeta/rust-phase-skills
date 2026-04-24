@@ -2147,6 +2147,90 @@ struct CreateUserRequest<'a> {
 fn create_user(req: CreateUserRequest) -> Result<User, Error> { ... }
 ```
 
+**Silent fallback for a provably-infallible operation:**
+```rust
+// BAD: unwrap_or_else silently hides bugs. If the error path is truly
+// impossible, the fallback value becomes a trap — a future change that
+// makes it reachable produces garbage ("{}") instead of a panic.
+pub fn format(report: &Report) -> String {
+    serde_json::to_string_pretty(&dto).unwrap_or_else(|_| "{}".into())
+}
+
+// GOOD: assert the invariant with .expect and state WHY it holds.
+// If the invariant ever breaks, the panic tells you exactly what changed.
+pub fn format(report: &Report) -> String {
+    serde_json::to_string_pretty(&dto)
+        .expect("DTO contains only primitives and strings — serialization is infallible")
+}
+```
+
+**Dead match arm for an impossible enum variant:**
+```rust
+// BAD: comment admits the branch is unreachable, then picks a nonsense
+// mapping. If the variant ever *does* reach here, users see mislabeled
+// output instead of a loud failure — correctness bug in defensive
+// clothing.
+fn to_kind(err: AppError) -> Kind {
+    match err {
+        AppError::Net { .. } => Kind::Net,
+        // Io only comes from the file path, never from the network path.
+        AppError::Io { .. } => Kind::Net,
+    }
+}
+
+// GOOD: narrow the match + unreachable! with a diagnostic. Better still,
+// split the error type so the impossible variants can't be constructed
+// here — but unreachable! is the minimum-cost fix.
+fn to_kind(err: AppError) -> Kind {
+    match err {
+        AppError::Net { .. } => Kind::Net,
+        other => unreachable!("to_kind is only called on network errors; got {other:?}"),
+    }
+}
+```
+
+**`// SAFETY:` comment on code that contains no `unsafe`:**
+```rust
+// BAD: SAFETY markers are reserved for unsafe blocks. Putting one on
+// safe code is misleading noise — reviewers must re-verify there's no
+// hidden unsafe; future readers assume the author meant something.
+fn write_report(bytes: &[u8]) -> io::Result<()> {
+    // SAFETY: write_all through stdout, flushing on drop.
+    let stdout = io::stdout();
+    stdout.lock().write_all(bytes)
+}
+
+// GOOD: no marker (or a plain comment if the "why" is genuinely
+// non-obvious). `// SAFETY:` appears only next to `unsafe { ... }`.
+fn write_report(bytes: &[u8]) -> io::Result<()> {
+    let stdout = io::stdout();
+    stdout.lock().write_all(bytes)
+}
+```
+
+**Planning-artifact citations in source comments:**
+```rust
+// BAD: the source references ephemeral planning documents. PLAN.md
+// will renumber; skill sections get revised; "TDD'd by ..." is noise
+// the first time someone without the plan reads the file.
+//! SSRF filter. Default-on per PLAN.md §9. TDD'd by PLAN.md §8 tests #5-7.
+//! Implements rust-planning §16 BAD/GOOD #2 (hexagonal layout).
+
+/// PLAN.md §8 test #5: private IPv4 ranges and loopback blocked.
+#[test]
+fn ssrf_blocks_private_ipv4() { /* ... */ }
+
+// GOOD: docs describe the current invariant. Process context stays in
+// the design document where it can be revised without touching src/.
+//! SSRF filter. Default-on. Rejects private IPv4/IPv6 ranges, loopback,
+//! link-local, and the literal hostnames `localhost` / `0.0.0.0`.
+
+#[test]
+fn ssrf_blocks_private_ipv4() { /* ... */ }
+```
+
+Rule of thumb: `grep -rn "PLAN\.md\|TDD'd\|rust-planning §\|rust-implementing §" src/` should return zero hits. Citations live in design docs, never in `//!` / `///` comments.
+
 ## Tracing & Observability
 
 ```rust
