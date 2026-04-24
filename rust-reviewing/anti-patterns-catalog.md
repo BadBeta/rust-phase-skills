@@ -412,6 +412,46 @@ Two new domains validated: **cargo** (the Rust package manager itself, written b
 
 ---
 
+## Validation pass 7 (2026-04-24) — Zola (static-site generator) + tokio-postgres (DB protocol)
+
+Two contrasting extremes of error strategy: Zola does the absolute minimum (`pub use anyhow::*;`) and tokio-postgres hand-rolls the whole thing.
+
+### Zola findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| App-level anyhow usage | Zola's entire custom error crate is `pub use anyhow::*;` — a single re-export | **New pattern documented** in error-strategy.md: "the minimum application-error strategy." Legitimate and under-appreciated. Apps that don't pattern-match on errors get all of anyhow's value with zero boilerplate, plus the indirection lets them swap strategies later with one edit. |
+| Edition 2024 in a mature CLI app | Zola root uses edition = "2024" | Confirmed |
+| CLI feature architecture | Zola features: `default = ["rust-tls"]`, `native-tls`, `indexing-zh`, `indexing-ja` — TLS backends + optional language-specific indexing | Classic "adapter via feature" + optional capability pattern |
+| Own `errors` workspace crate that wraps anyhow | `components/errors` exists but only re-exports | Subtle pattern: abstract the error crate behind your own indirection so you can swap later |
+| Release profile — aggressive LTO + strip | `lto = true, codegen-units = 1, strip = true` | Standard "size + speed optimized" profile for a distributed CLI |
+| No workspace-level lints | `[workspace.lints]` not present | Data point: not universal; many projects skip this |
+
+### tokio-postgres (rust-postgres) findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Yet another hand-rolled Error struct | `Error` wraps `Box<ErrorInner>` with a `Kind` enum (18 variants) + optional cause chain; implements `Display` and `Error` manually | **Hand-rolled error list grows to 7:** ripgrep, tokio, hyper, serde, polars, rustls, tokio-postgres |
+| Published library **without** `#[non_exhaustive]` | `Error` struct and `Kind` enum both lack the attribute | **Reinforces the "library-vs-app" rule is too simplistic.** tokio-postgres is a published library where the variants track the Postgres wire protocol (stable for decades). Exhaustive matching is a feature there — callers who branch on `Kind::Authentication` don't want to silently miss a new variant. Documented as a contrast to rustls's hierarchical-with-non_exhaustive design in error-strategy.md. |
+| Crate-split by dependency surface | 9 crates: `tokio-postgres`, `postgres` (sync), `postgres-protocol` (wire), `postgres-types` (type conversion), `postgres-native-tls`, `postgres-openssl`, `postgres-derive`, `postgres-derive-test`, `codegen` | Confirms "split by dependency surface" at scale — protocol/wire/types/TLS/sync-wrapper all separate crates |
+| TLS as separate adapter crates | `postgres-native-tls` and `postgres-openssl` live as peers alongside the main crate | Classic "adapter selection by crate" — different from feature-flag selection |
+| `debug = 2` in release profile | Full debug symbols preserved in release builds | **New pattern** documented in workspace-layout.md: for long-running services where production-time debugging is important, trade ~3-10x binary size for rich local-variable info in backtraces/core-dumps |
+| `Box<dyn Error>` internally, NOT in public API | `ErrorInner` wraps a `Box<dyn Error + Sync + Send>` cause | The "never Box<dyn Error> in public APIs" rule still holds — tokio-postgres exposes `Error::source()` not the box directly |
+| `SqlState` mapping via `Error::code()` that downcasts | Domain-specific error semantics (SQLSTATE codes) integrated cleanly | Interesting pattern: domain-specific error metadata exposed via typed accessor rather than a dedicated variant |
+
+### Updates applied after pass 7
+
+1. **error-strategy.md** — added tokio-postgres to hand-rolled-error list; added contrast between "flat hand-rolled, no `#[non_exhaustive]`" (tokio-postgres) vs "hierarchical + `#[non_exhaustive]`" (rustls) as two valid library patterns; added "The minimum application-error strategy (Zola pattern)" section documenting `pub use anyhow::*;` in a dedicated errors crate.
+2. **workspace-layout.md** — added note about `debug = 2` in release for production-debug-symbol preservation; cited tokio-postgres as the example.
+
+### Pass 7 sources
+- [getzola/zola](https://github.com/getzola/zola) — root `Cargo.toml`, `components/errors/src/lib.rs`
+- [sfackler/rust-postgres](https://github.com/sfackler/rust-postgres) — root `Cargo.toml`, `tokio-postgres/src/error/mod.rs`
+- [pulldown-cmark](https://github.com/pulldown-cmark/pulldown-cmark) — Zola's markdown parser
+- [tera](https://github.com/Keats/tera) — Zola's templating engine
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).

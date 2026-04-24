@@ -59,7 +59,26 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-### Hand-rolled pattern (ripgrep, tokio, hyper, serde, polars, rustls)
+### The minimum application-error strategy (Zola pattern)
+
+Zola — a full-featured static site generator — has a dedicated `errors` workspace crate whose entire content is:
+
+```rust
+// components/errors/src/lib.rs
+pub use anyhow::*;
+```
+
+The app then depends on `errors` rather than `anyhow` directly. Throughout Zola's codebase, `errors::Result<T>` is the standard return type.
+
+This is a legitimate and underrated pattern:
+
+- **Zero boilerplate** — you get anyhow's full API unchanged.
+- **Swap-safe** — the indirection through your own `errors` crate means you can later replace anyhow with a typed enum, miette, or something else with one edit rather than rewriting every `use anyhow`.
+- **Signals intent** — "errors are an app concern, not a library concern" is visible in the module name.
+
+**When this is enough:** application-only code, nothing published, callers don't pattern-match on error variants. You get context chaining from anyhow without needing to design an enum. Add typing only when a specific use case demands it.
+
+### Hand-rolled pattern (ripgrep, tokio, hyper, serde, polars, rustls, tokio-postgres)
 
 For top-tier libraries where every aspect of error representation matters:
 
@@ -116,6 +135,8 @@ pub type PolarsResult<T> = Result<T, PolarsError>;
 ```
 
 Also: polars does NOT use `#[non_exhaustive]` on `PolarsError` — this is deliberate, consistent with the "exhaustive matching is a feature for app-internal callers" principle. Published library + exhaustive enum = explicit decision that the variant set is stable.
+
+**tokio-postgres (rust-postgres) reinforces this.** It's a published library with a hand-rolled `Error` struct wrapping `Box<ErrorInner>` that contains a `Kind` enum with 18 variants (`Io`, `UnexpectedMessage`, `Tls`, `ToSql(usize)`, `FromSql(usize)`, `Column(String)`, `Connect`, `Timeout`, `Authentication`, `Db`, ...). Neither the `Error` struct nor the `Kind` enum is `#[non_exhaustive]`. It integrates `SqlState` via `Error::code()` which downcasts to `DbError`. This flat-hand-rolled design is the opposite of rustls's hierarchical-with-non_exhaustive design — both are valid library patterns; the choice depends on whether you expect the variant set to grow over time (rustls: yes, protocol evolves) vs. stabilize early (tokio-postgres: variants track Postgres protocol, which is stable).
 
 ### Hierarchical enum-of-enums (rustls)
 

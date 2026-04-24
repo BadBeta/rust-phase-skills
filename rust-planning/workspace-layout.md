@@ -80,6 +80,13 @@ lto = "thin"                  # Fast LTO by default
 debug = 1                     # Line-table debug info for backtraces
 codegen-units = 16
 
+# Some projects keep FULL debug symbols in release (debug = 2). Example:
+# rust-postgres / tokio-postgres sets [profile.release] debug = 2 so that
+# panic backtraces and production core-dumps contain rich local-variable
+# info. Trade-off: larger binaries (sometimes 3-10x). Worth it for
+# long-running services where post-hoc debugging of production issues is
+# a requirement.
+
 # Packaging profile — slower compile, smallest+fastest binary
 [profile.release-lto]
 inherits = "release"
