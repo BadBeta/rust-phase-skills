@@ -160,7 +160,7 @@ Rust has many ways to express the same idea. Picking the idiomatic construct at 
 |---|---|---|
 | Shared immutable data | `Arc<T>` | `&'static T` (requires `'static` everywhere) |
 | Shared mutable, infrequent writes | `Arc<RwLock<T>>` (std for sync, `tokio::sync::RwLock` for async held across `.await`) | `Arc<Mutex<T>>` if reads dominate |
-| Shared mutable, short critical sections | `Arc<Mutex<T>>` (std for sync, `parking_lot::Mutex` for perf) | `tokio::sync::Mutex` unless held across `.await` |
+| Shared mutable, short critical sections NOT held across `.await` | `Arc<std::sync::Mutex<T>>` or `parking_lot::Mutex` for perf | `tokio::sync::Mutex` (unnecessary overhead when no `.await` inside the lock) |
 | Shared mutable across `.await` | `tokio::sync::Mutex` / `RwLock` | `std::sync::Mutex` (would block the runtime) |
 | Concurrent map | `dashmap::DashMap` | `Arc<Mutex<HashMap>>` |
 | Atomic counter / flag | `AtomicU64` / `AtomicBool` (`Ordering::Relaxed` usually OK) | `Arc<Mutex<u64>>` |

@@ -30,8 +30,8 @@ One runtime per binary. Don't mix. Tokio + async-std in the same process have in
 | Runtime | When to choose | Trade-offs |
 |---|---|---|
 | **Tokio** (default) | Web services, databases, most async code | Huge ecosystem; `axum`, `sqlx`, `reqwest`, `tonic` integrate natively. Slight binary size / compile-time overhead. |
-| `smol` | Small/embedded, minimal deps, want `async-std`-like API | Smaller footprint, less mature ecosystem |
-| `async-std` | Legacy compatibility only | No longer actively maintained as of 2024; migrate to Tokio or smol |
+| `smol` | Small/embedded, minimal deps, want `async-std`-like API | Smaller footprint, less mature ecosystem. **Upstream recommendation for projects moving off `async-std`.** |
+| `async-std` | **Discontinued** as of March 2025 (v1.13.1 was the final release) | Do not use for new projects. Migrate existing code to Tokio or smol. |
 | `monoio` / `glommio` | io_uring, single-threaded-per-core, Linux-only HPC | Highest performance for specific workloads; smaller ecosystem |
 | `embassy` | Embedded, `no_std`, bare-metal MCU | MCU-specific; different execution model |
 

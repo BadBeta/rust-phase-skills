@@ -146,20 +146,31 @@ Distributed = you can't use a single stack trace. Plan for:
 - **Health + readiness endpoints** — `/health` (alive), `/ready` (deps available)
 
 ```rust
-// OpenTelemetry tracing
+// OpenTelemetry tracing (opentelemetry-otlp 0.28+ builder API; the
+// older `new_pipeline().tracing().with_exporter(...)` style is deprecated)
 use opentelemetry::global;
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tracing_opentelemetry::OpenTelemetryLayer;
 
-let tracer = opentelemetry_otlp::new_pipeline()
-    .tracing()
-    .with_exporter(opentelemetry_otlp::new_exporter().tonic())
-    .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+let exporter = SpanExporter::builder()
+    .with_tonic()
+    .with_endpoint("http://localhost:4317")
+    .build()?;
+
+let provider = SdkTracerProvider::builder()
+    .with_batch_exporter(exporter)
+    .build();
+let tracer = provider.tracer("my-service");
+global::set_tracer_provider(provider);
 
 tracing_subscriber::registry()
     .with(OpenTelemetryLayer::new(tracer))
     .with(tracing_subscriber::fmt::layer().json())
     .init();
 ```
+
+Exact API details change per release — consult the `opentelemetry_otlp` docs for your pinned version. The key point is that the modern builder pattern (`SpanExporter::builder().with_tonic()`) replaces the older pipeline API.
 
 ## Decision 7 — Deployment model
 

@@ -3286,6 +3286,8 @@ impl Handler<DoWork> for Worker {
 
 ### Custom Actors with async-std
 
+> **Note:** `async-std` was discontinued in March 2025 (v1.13.1 was the final release). For new code, use the Tokio equivalents (`tokio::sync::mpsc::channel`, `tokio::spawn`) or `smol`. The pattern below is retained for readers maintaining existing `async-std` code; the shape of the pattern is identical across runtimes.
+
 Build actors from scratch using channels for maximum flexibility:
 
 ```rust

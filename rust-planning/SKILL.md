@@ -47,7 +47,7 @@ This SKILL.md covers the always-loaded rules, planning workflow, master decision
 | [unsafe-strategy.md](unsafe-strategy.md) | When unsafe is justified, minimal unsafe surface, safety contracts, FFI strategy (bindgen vs cbindgen vs cxx), `catch_unwind` at FFI boundaries, `AbortIfPanic` guard (rayon pattern), Miri in CI, unsafe review checklist | Deciding whether to use unsafe; designing an FFI boundary |
 | [services-architecture.md](services-architecture.md) | Monolith vs nanoservices vs microservices, kernel pattern, feature-gated adapters, resilience (circuit breakers, retries, backoff, idempotency), service discovery (Kubernetes, kube-rs), CAP theorem, TCP server/client architecture, TLS placement | Designing a service, multi-service architecture, resilience strategy |
 | [data-strategy.md](data-strategy.md) | Store choice (PostgreSQL / MySQL / SQLite / Mongo / sled / embedded / Redis), ORM vs query builder vs raw SQL (SQLx / Diesel trade-offs), migration strategy, connection pooling, caching strategy (moka, Redis), data ownership across contexts | Choosing a data store; designing migrations; caching strategy |
-| [test-strategy.md](test-strategy.md) | **FIRST-CLASS**: test pyramid for Rust, mocking strategy (trait-first, mockall), property-based testing scope (proptest / quickcheck), fuzzing scope (cargo-fuzz / afl), snapshot testing (insta), loom model checking, compile-fail tests (trybuild), CI strategy, coverage goals, E2E strategy (cargo-nextest, assert_cmd, Axum TestServer), test as design driver | Planning test infrastructure; deciding testing investment per layer |
+| [test-strategy.md](test-strategy.md) | **FIRST-CLASS**: test pyramid for Rust, mocking strategy (trait-first, mockall), property-based testing scope (proptest / quickcheck), fuzzing scope (cargo-fuzz / afl), snapshot testing (insta), loom model checking, compile-fail tests (trybuild), CI strategy, coverage goals, E2E strategy (cargo-nextest, assert_cmd, `axum-test` crate's `TestServer`), test as design driver | Planning test infrastructure; deciding testing investment per layer |
 | [distributed-rust.md](distributed-rust.md) | Multi-node patterns, gRPC (tonic) service contracts, HTTP service-to-service, message bus (Kafka/NATS), distributed consensus considerations, partition handling, idempotency across services | Designing multi-node / clustered / multi-region deployments |
 
 **Cross-references:** subskills link to each other and to the other main skills' subskills (when they exist) via relative paths.
@@ -105,7 +105,7 @@ These rules consolidate 10 architectural principles + 17 decision rules + planni
 ### Async strategy
 
 22. **NEVER introduce async before the sync version is too slow or too blocking.** Async costs ergonomic complexity (lifetimes, `Send` bounds, pin projection, runtime selection). Use async for concurrent I/O at scale, not for "making things faster."
-23. **ALWAYS pick one async runtime per binary and commit to it.** Mixing Tokio and async-std in the same binary causes subtle bugs. Tokio is the default for web/service code; `smol` for embedded and minimal deployments. Async-std is no longer actively developed as of 2024 — prefer Tokio.
+23. **ALWAYS pick one async runtime per binary and commit to it.** Mixing Tokio and async-std in the same binary causes subtle bugs. Tokio is the default for web/service code; `smol` for embedded and minimal deployments. **`async-std` was officially discontinued in March 2025 (v1.13.1 final); migrate off it to Tokio or smol.**
 24. **ALWAYS design task topology upfront.** How many top-level tasks? Are they supervised (`JoinSet`)? How do they coordinate (channels, shared state, `Notify`)? Sketch the task graph before spawning anything.
 25. **NEVER spawn fire-and-forget tasks.** Every `tokio::spawn` must have its `JoinHandle` tracked (in `JoinSet`, stored in state, or awaited). Untracked tasks that panic silently swallow errors and leak forever.
 26. **ALWAYS set timeouts at every external boundary** (HTTP clients, database queries, gRPC calls, socket operations). Cascade correctly: outer > middle > inner. Otherwise outer timeouts fire before inner ones with meaningless errors.
@@ -267,7 +267,7 @@ This is the spine of the skill. Every major architectural question maps to a row
 | Question | Answer | Details |
 |---|---|---|
 | Should this be async at all? | Async if: concurrent I/O at scale, web server, streaming, many tasks. Sync if: CLI, library with sync consumers, computational | §10.1 |
-| Which runtime? | Tokio (default for web/services). `smol` for minimal/embedded. async-std (declining) only to maintain legacy | §10.2 + `async-strategy.md` |
+| Which runtime? | Tokio (default for web/services). `smol` for minimal/embedded. `async-std` discontinued (March 2025) — migrate off | §10.2 + `async-strategy.md` |
 | Single-threaded or multi-threaded runtime? | Multi-threaded (default) for web servers. Single-threaded (`current_thread`) for low-overhead services, deterministic testing, resource-constrained environments | §10.2 |
 | How many tokio tasks? | As few as possible — often one per top-level concern (server, background worker, metrics flusher). Avoid per-request tasks unless needed. | §10.3 |
 | Supervise tasks? | `JoinSet` for a group; store `JoinHandle` in state; never fire-and-forget | §10.3 |
@@ -308,7 +308,7 @@ This is the spine of the skill. Every major architectural question maps to a row
 | Property-based | `proptest` — for parsers, serializers, state machines, arithmetic | `test-strategy.md` |
 | Fuzzing | `cargo-fuzz` (libFuzzer) — for parsers, deserializers, protocol handling, untrusted input | `test-strategy.md` |
 | Snapshot | `insta` — for CLI output, error messages, serialized structures | `test-strategy.md` |
-| E2E HTTP | `reqwest` + test server (Axum `TestServer`, `actix-web::test::TestServer`), or `assert_cmd` for CLI | `test-strategy.md` |
+| E2E HTTP | `reqwest` + test server (`axum-test` crate's `TestServer`, `actix-web::test::TestServer`), or `assert_cmd` for CLI | `test-strategy.md` |
 | Concurrency | `loom` — model-checking for lock-free or unsafe concurrency | `test-strategy.md` |
 | Compile-fail | `trybuild` — verify that certain patterns fail to compile (type safety) | `test-strategy.md` |
 | Coverage | `cargo-llvm-cov` or `cargo-tarpaulin` — set target; don't chase 100% | `test-strategy.md` |
@@ -792,7 +792,7 @@ See `async-strategy.md` for full treatment. Planning-level decisions:
 |---|---|
 | **Tokio** (default) | Web services, databases, most async code. Huge ecosystem; `axum`, `sqlx`, `reqwest`, `tonic` all integrate. |
 | `smol` | Small/embedded, minimal dependencies, want `async-std`-style API with less baggage |
-| `async-std` | Legacy or niche cases; no longer actively maintained |
+| `async-std` | **Discontinued** as of March 2025 (v1.13.1 final). Do not start new code with it; migrate existing code to Tokio or smol. |
 | `monoio` / `glommio` | io_uring-based, single-threaded-per-core, Linux-only high-performance servers |
 | `embassy` | Embedded (no_std), bare-metal microcontrollers |
 

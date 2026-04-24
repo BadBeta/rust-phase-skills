@@ -12,7 +12,7 @@ For implementation-side code (writing `#[test]`s, mockall macros, proptest strat
 |---|---|---|---|---|
 | Unit | One module, no I/O | μs-ms | 1000s | `cargo test`, `mockall` for trait mocks |
 | Integration | Across modules, possibly real deps | ms-s | 100s | `tests/*.rs`, `#[sqlx::test]`, `wiremock`, `testcontainers` |
-| E2E | Real HTTP server + real DB + real externals (or VCR'd) | s | 10s | `reqwest`, `assert_cmd`, Axum `TestServer` |
+| E2E | Real HTTP server + real DB + real externals (or VCR'd) | s | 10s | `reqwest`, `assert_cmd`, `axum-test`'s `TestServer` (a separate crate, not part of `axum` itself) |
 | Property | Generative — many cases per test | ms-s | 10s of fns, 1000s of cases | `proptest`, `quickcheck` |
 | Fuzz | Untrusted input, long campaigns | mins-hours | A few fuzz targets | `cargo-fuzz` (libFuzzer), `afl.rs` |
 | Compile-fail | Verify certain patterns don't compile | ms | Per invariant | `trybuild` |

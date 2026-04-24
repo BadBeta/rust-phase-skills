@@ -1910,7 +1910,12 @@ async fn test_create_and_retrieve_post() {
 }
 ```
 
-### Axum TestServer Pattern
+### Axum: `tower::ServiceExt::oneshot` Pattern (no live server)
+
+For end-to-end-style testing with a running server, use the `axum-test` crate's
+`TestServer` (separate crate from `axum` itself). For in-process testing where
+you exercise the `Router` directly without any networking, use
+`tower::ServiceExt::oneshot` as below:
 
 ```rust
 use axum::{body::Body, http::{Request, StatusCode}};
