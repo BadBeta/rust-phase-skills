@@ -499,6 +499,39 @@ Also: earlier evidence in this file claimed rust-analyzer uses `parking_lot`. Th
 
 ---
 
+## Validation pass 9 (2026-04-24) — Embassy + esp-hal (embedded async, RP2350/ESP32)
+
+Validated against the embedded-Rust ecosystem: **embassy** (modern async embedded framework) and **esp-hal** (Espressif's official HAL for ESP32 family). Covers the user's `RP2350`/`ESP32` ask via `embassy-rp` and esp-hal's embassy integration.
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Platform-selection via mutually-exclusive features | embassy-executor's `platform-cortex-m` / `platform-cortex-ar` / `platform-riscv32` / `platform-wasm` / `platform-avr` / `platform-std` / `platform-spin`; embassy-rp's `rp2040` / `rp235xa` / `rp235xb` | **New pattern** documented in workspace-layout.md: architecture-level and chip-level selection via exactly-one-of-N features. With `_prefix` convention for internal shared-implementation features. |
+| Hardware-variant features for board-level BSPs | embassy-rp's flash boot2 features (`W25Q080`, `GD25Q64C`, generic, RAM-copy); RP2350 image-def features (`imagedef-secure-exe` vs `imagedef-nonsecure-exe`) | **New pattern** documented: feature-as-hardware-selector for boards that share a HAL but ship with different silicon. |
+| CI build matrix in Cargo.toml metadata | embassy-executor declares `[package.metadata.embassy]` with 40+ target × feature combinations for cross-architecture CI | **New pattern** documented in workspace-layout.md — metadata-driven CI matrix alongside the source of truth (features). |
+| Async-first embedded framework | Embassy makes async peripherals the default API; no sync/async toggle. Multiple `embedded-hal` versions coexist (`embedded-hal-02`, `embedded-hal-1`, `embedded-hal-async`) during the v0.2→v1.0 transition | **New paradigm** added to rust-planning/SKILL.md §16: async-first embedded firmware as a distinct paradigm from kernel/bare-metal (which this skill also lists as separate). |
+| Scheduler-mode features | Embassy exposes `scheduler-deadline` and `scheduler-priority` — configurable scheduling modes | Data point: even embedded executors expose scheduling choices; not universal (std Tokio also has `current_thread` vs `multi_thread`). |
+| Embedded ecosystem canon | `critical-section` (concurrency primitive), `portable-atomic` (atomics polyfill), `defmt` (binary logging), `heapless` (no_std collections), `static_cell` (statically-allocated runtime-init) | **New** — documented in rust-planning/async-strategy.md (runtime table for embassy row) and rust-planning/SKILL.md §16 (async-first embedded paradigm). Cross-references to chip-specific skills (`rp2040`, `rp2350`, `esp32-c`). |
+| Edition 2024 in embedded code | embassy workspace on edition 2024 | Confirmed — even MCU-targeting Rust code uses 2024 edition |
+| `panic = "abort"` required in embedded profile | Consistent with Redox finding; embedded profiles always use `panic = "abort"` | Confirmed; already documented from Redox. |
+| Multi-embedded-hal-version coexistence pattern | embassy-rp pulls `embedded-hal-02` + `embedded-hal-1` + `embedded-hal-async` all at once to bridge the v0.2→v1.0 ecosystem transition | Data point: major ecosystem transitions require parallel-version support. Same pattern as cargo's `gix` + `git2`. |
+
+### Updates applied after pass 9
+
+1. **rust-planning/SKILL.md §16** — added "Async-first embedded firmware" as sixth architectural paradigm, with the embedded ecosystem stack (`critical-section`, `portable-atomic`, `defmt`, `heapless`, `static_cell`) and cross-references to chip skills (`rp2040`, `rp2350`, `esp32-c`).
+2. **rust-planning/async-strategy.md** — expanded the embassy row of the runtime table with the chip list, architecture-selection pattern, and ecosystem dependency list.
+3. **rust-planning/workspace-layout.md** — added: (a) platform-selection via mutually-exclusive features pattern (embassy); (b) hardware-variant features for board-level BSPs (embassy-rp flash variants); (c) CI build matrix via `[package.metadata.*]` pattern (embassy's 40+ combinations).
+
+### Pass 9 sources
+- [embassy-rs/embassy](https://github.com/embassy-rs/embassy) — `embassy-executor/Cargo.toml`, `embassy-rp/Cargo.toml`
+- [esp-rs/esp-hal](https://github.com/esp-rs/esp-hal) — root `Cargo.toml`
+- [Embassy Book](https://embassy.dev/book/) — framework architecture
+- [critical-section](https://github.com/rust-embedded/critical-section) — pluggable critical-section primitive
+- [defmt](https://defmt.ferrous-systems.com/) — efficient binary logging for embedded
+- [heapless](https://docs.rs/heapless/) — no_std collections with compile-time bounds
+- [static_cell](https://docs.rs/static_cell/) — statically-allocated runtime-init cells
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).

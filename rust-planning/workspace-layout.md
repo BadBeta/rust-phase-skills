@@ -279,6 +279,38 @@ Benefits:
 - `stable` alias signals stability commitment separately from feature composition
 - Individual features remain granular for build-size tuning
 
+**Platform-selection via mutually-exclusive features (embassy pattern):**
+
+For code that must compile differently per architecture or chip, use feature flags as compile-time selectors. Embassy organizes architecture selection this way:
+
+```toml
+[features]
+# Exactly one of these should be enabled
+platform-cortex-m = ["dep:cortex-m"]
+platform-riscv32 = ["dep:riscv"]
+platform-avr = ["dep:portable-atomic"]
+platform-wasm = []
+platform-std = []
+# ... plus executor mode selection:
+executor-thread = []
+executor-interrupt = []
+```
+
+For chip-level selection within a single architecture, embassy-rp uses:
+
+```toml
+[features]
+rp2040 = ["_rp2040"]
+rp235xa = ["_rp235x"]
+rp235xb = ["_rp235x"]
+_rp2040 = []   # internal, implementation detail
+_rp235x = []
+```
+
+The `_prefix` convention marks internal features that users shouldn't enable directly — they're implementation shared between public chip features.
+
+**Hardware-variant features**: same repo also exposes `W25Q080`, `GD25Q64C`, etc. — different flash chips need different bootloaders. Board-level BSP crates pick exactly one. This is the "feature-as-hardware-selector" pattern, common wherever the same HAL crate targets boards with different silicon.
+
 **Facade crate with feature-gated subcrates (ripgrep pattern):**
 ```toml
 # grep/Cargo.toml — single entry point re-exporting subcrates
@@ -300,6 +332,23 @@ pub use grep_printer as printer;
 #[cfg(feature = "pcre2")]
 pub use grep_pcre2 as pcre2;
 ```
+
+### CI build matrix via `[package.metadata.*]` (embassy pattern)
+
+For cross-platform libraries that need to verify every combination of target triples × feature flags × chip variants, encode the build matrix as Cargo.toml metadata rather than scattered CI scripts:
+
+```toml
+[package.metadata.embassy]
+# CI reads this to generate a multi-architecture build/test matrix
+targets = ["thumbv7em-none-eabi", "riscv32imac-unknown-none-elf", "wasm32-unknown-unknown"]
+features = [
+  ["platform-cortex-m", "executor-thread"],
+  ["platform-riscv32", "executor-interrupt"],
+  # ... 40+ combinations total
+]
+```
+
+Keeps the source of truth for "what must compile" inside the Cargo.toml alongside the features themselves. CI tooling consumes the metadata to generate the matrix.
 
 ### Anti-patterns
 

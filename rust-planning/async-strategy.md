@@ -33,7 +33,7 @@ One runtime per binary. Don't mix. Tokio + async-std in the same process have in
 | `smol` | Small/embedded, minimal deps, want `async-std`-like API | Smaller footprint, less mature ecosystem. **Upstream recommendation for projects moving off `async-std`.** |
 | `async-std` | **Discontinued** as of March 2025 (v1.13.1 was the final release) | Do not use for new projects. Migrate existing code to Tokio or smol. |
 | `monoio` / `glommio` | io_uring, single-threaded-per-core, Linux-only HPC | Highest performance for specific workloads; smaller ecosystem |
-| `embassy` | Embedded, `no_std`, bare-metal MCU | MCU-specific; different execution model |
+| `embassy` | Embedded, `no_std`, bare-metal MCU (Cortex-M, RISC-V, ESP32 via esp-hal, RP2040/RP2350, nRF, STM32) | Async-first embedded framework. Architecture selected via `platform-*` features. Chip selected via mutually-exclusive features (e.g., `rp2040` vs `rp235xa`). Async peripherals are THE API — no sync/async toggle. Ecosystem: `critical-section` (concurrency primitive), `portable-atomic` (atomics polyfill), `defmt` (binary logging), `heapless` (no_std collections), `static_cell` (for the executor singleton). See the `rp2040`, `rp2350`, `esp32-c` skills for chip specifics. |
 | **Custom runtime integrated with a UI event loop** | GUI apps where async work must coordinate with the main thread | Zed's GPUI uses `async-task` wrapping platform primitives (GCD on macOS); egui/iced drive their own executors; Bevy uses its own task pools. Don't try to force Tokio into a GUI's main thread. |
 
 ### Tokio flavor (single-threaded vs multi-threaded)
