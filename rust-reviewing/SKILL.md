@@ -77,6 +77,7 @@ The core SKILL.md carries the always-loaded rules, severity guidance, workflows,
 13. **ALWAYS verify `unsafe` by reading the block AND its safety comment** — an `unsafe` block with no `// SAFETY:` comment is a block-severity finding by itself.
 14. **ALWAYS check for lifetime/borrow smells**: `'static` bounds that shouldn't be needed (suggest refactoring), self-referential structs (suggest `Pin` / indices), lifetimes elided in ways that obscure relationships.
 15. **ALWAYS check async correctness**: `MutexGuard` across `.await`, blocking calls in async, missed `Send` bounds, fire-and-forget `tokio::spawn`, missing timeout on external calls.
+16. **ALWAYS apply the Single Source of Truth litmus test**: for each non-trivial fact the diff introduces (a validation rule, a magic value, a type declaration, a version pin, a shared constant), ask *"if this fact changes, how many files do I have to update?"* If the answer is greater than 1, flag an SSOT violation and point to the authoritative location — domain constructor, shared `const`, `[workspace.dependencies]`, or a single owning crate. SSOT violations are drift-in-waiting and usually ship as bugs the next time the fact updates.
 
 ---
 
@@ -273,6 +274,14 @@ When writing review comments, classify each finding. Block-severity findings pre
 - [ ] Composition root (`main.rs`) is the only place that names all concrete types
 - [ ] No global mutable state / `LazyLock<Mutex<T>>` / `lazy_static!` for mutable services
 - [ ] No `Box<dyn Error>` in public library APIs
+- [ ] **Single Source of Truth** — apply the litmus test: *"if this fact changes, how many files do I have to update?"* Answer should be 1 (or 1-plus-compiler-enforced-callers). Specifically check:
+  - [ ] No duplicated validation rules across layers (API validator + domain + DB CHECK all encoding the same invariant)
+  - [ ] No magic values as literals in multiple files (should be `const` / `static`)
+  - [ ] No duplicate type declarations across crates (should be in a shared crate)
+  - [ ] Dependency versions pinned once via `[workspace.dependencies]`, not per-crate
+  - [ ] Trait defined once (in the domain/consuming crate), implementations elsewhere
+  - [ ] Schema for each entity owned by exactly one module; other modules read via its public API
+  - [ ] Error-variant set declared in one enum, not scattered constructors across modules
 
 ### 7.2 Ownership, lifetimes, borrowing
 
@@ -601,7 +610,36 @@ async fn processed() {
 }
 ```
 
-### 12. Test asserts implementation detail, not behavior
+### 12. SSOT violation — same fact encoded in multiple places
+
+```rust
+// BAD: the retry policy (3 attempts, 100ms initial backoff) lives as
+// literals in three different files. When the SLA changes to 5 attempts
+// with 250ms initial backoff, reviewer updates two spots and misses the
+// third; CI passes; behavior diverges silently.
+
+// src/client/orders.rs
+let result = retry(3, Duration::from_millis(100), || call_api()).await?;
+// src/workers/sync.rs
+for attempt in 0..3 { /* ... */ tokio::time::sleep(Duration::from_millis(100)).await; }
+// src/alerts/webhook.rs
+let backoff = ExponentialBackoff::from_millis(100).take(3);
+```
+
+```rust
+// GOOD: one canonical declaration. `grep MAX_ATTEMPTS` finds everywhere.
+// domain/retry.rs
+pub const MAX_ATTEMPTS: u32 = 3;
+pub const INITIAL_BACKOFF: Duration = Duration::from_millis(100);
+
+// Everywhere else:
+use domain::retry::{MAX_ATTEMPTS, INITIAL_BACKOFF};
+// ... all three call sites reference the same const.
+```
+
+**Review litmus test for SSOT:** *"If this fact changes, how many files do I have to update?"* Answer > 1 ⇒ flag it, propose the single canonical location.
+
+### 13. Test asserts implementation detail, not behavior
 
 ```rust
 // BAD: couples the test to a specific call sequence. Any internal
