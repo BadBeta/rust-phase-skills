@@ -329,6 +329,41 @@ Validation against [rustls/rustls](https://github.com/rustls/rustls) — pure-Ru
 
 ---
 
+## Validation pass 5 (2026-04-24) — wgpu (GPU graphics/compute)
+
+Validated against [gfx-rs/wgpu](https://github.com/gfx-rs/wgpu) — WebGPU-spec implementation; 26-member workspace; used by Firefox, Deno, Bevy. Used to ALSO author a new GPU subskill ([rust-implementing/gpu.md](../rust-implementing/gpu.md)).
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Concentrate unsafe in one layer, keep user crate safe | wgpu layers its crates: `wgpu` (user-facing, `#![warn(unsafe_op_in_unsafe_fn)]`) → `wgpu-core` (validation, minimal unsafe) → `wgpu-hal` (all the platform FFI unsafe) → `wgpu-types` (safe shared types) | **Strongly confirmed** as the canonical "delegate unsafe to a lower layer" pattern. Referenced in the new gpu.md. |
+| `#[warn(unsafe_op_in_unsafe_fn)]` at library crate root | wgpu/src/lib.rs declares it | New lint worth mentioning in unsafe-strategy.md — enforces the `unsafe {}` block requirement inside `unsafe fn` (otherwise implicit, easy to miss). |
+| Runtime-agnostic library | wgpu works with pollster, tokio, or GUI event loops without runtime lock-in | Confirmed; aligns with rust-planning/SKILL.md Rule 23. GUI-app custom runtime pattern from Zed extends naturally: Bevy drives wgpu from its own loop. |
+| Multi-backend via feature flags | `vulkan`/`metal`/`dx12`/`gles`/`webgl`/`angle`/`vulkan-portability`/`wgsl`/`spirv`/`glsl`/`noop` | Classic "adapter via feature flag" pattern validated at scale (10+ mutually-selectable backends) |
+| Dummy/mock backend for testing | `noop` backend — creates resources, no execution | **New testing pattern** documented in gpu.md. Conceptually different from mockall (which mocks one trait) — this is a whole-backend stub enabling resource-management testing on CI without a GPU. |
+| Separate shader compiler crate | `naga` translates WGSL ↔ SPIR-V ↔ MSL ↔ HLSL ↔ GLSL | Architectural pattern: the shader compiler is its own crate, not embedded in wgpu-core. Validates "split by dependency surface" in [workspace-layout.md](../rust-planning/workspace-layout.md). |
+| Error scope model distinct from Result | `Device::push_error_scope(ErrorFilter::Validation)` + `pop_error_scope()` | **Novel pattern** — spec-driven (WebGPU requires async error reporting). Documented in gpu.md. Doesn't contradict Rust error-handling rules; just a domain-specific layer. |
+| `[workspace.lints]` with `ref_as_ptr = "warn"` | Additional lints externalized to `clippy.toml` | Worth noting the `clippy.toml` option — some config is per-crate-tree not per-workspace. |
+| Custom profile with `opt-level = 3` for specific dev-dep | `[profile.dev.package."nv-flip-sys"] opt-level = 3` for image-comparison crate in dev builds | **New pattern** worth noting: per-package dev-build optimization, separate from the main `dev` profile. Add to workspace-layout.md opportunistically. |
+| Edition 2021 (NOT 2024) for a large modern codebase | wgpu is still on edition 2021 | Data point: migration to 2024 isn't free; large multi-crate projects often lag by design. My "edition 2024 for new projects" rule is correct but shouldn't be over-read as "all projects must migrate." |
+| MSRV 1.93 | Declared at workspace level | Confirmed |
+| `bytemuck` + `glam` + `pollster` stack | Standard wgpu dependency set | Aligns with `bytemuck` recommendation in unsafe-strategy.md. `glam` newly worth referencing for GPU-adjacent math. |
+
+### Updates applied after pass 5
+
+1. **NEW subskill authored:** [rust-implementing/gpu.md](../rust-implementing/gpu.md) — covers the full wgpu stack with a complete compute example, error scopes, backend selection, noop testing, cross-platform (native + WebGPU), ecosystem crates, common pitfalls review checklist.
+2. **rust-implementing/SKILL.md subskill table** — added the `gpu.md` row.
+3. This validation log (pass 5).
+
+### Validation pass 5 sources
+- [gfx-rs/wgpu](https://github.com/gfx-rs/wgpu) — root `Cargo.toml`, `wgpu/src/lib.rs`, `wgpu-core/Cargo.toml`
+- [wgpu docs](https://docs.rs/wgpu/) — Instance, Device, Queue, Error, ErrorFilter, RequestDeviceError
+- [wgpu website](https://wgpu.rs/)
+- [WebGPU spec](https://www.w3.org/TR/webgpu/) and [WGSL spec](https://www.w3.org/TR/WGSL/)
+- [Learn Wgpu tutorial](https://sotrh.github.io/learn-wgpu/)
+- [naga shader compiler](https://github.com/gfx-rs/wgpu/tree/trunk/naga)
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).
