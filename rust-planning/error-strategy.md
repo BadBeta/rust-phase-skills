@@ -384,6 +384,44 @@ let x = never_fails(5).unwrap();  // Safe — Infallible has no variants
 
 Useful for trait impls where the trait requires `Result` but this implementor can't fail.
 
+## Decision 7.5 — The kernel / syscall boundary (Redox pattern)
+
+Some domains can't use `Result<T, E>` at the boundary: the ABI requires FFI-compatible integer returns. Kernel code, syscall handlers, and library boundaries callable from C face this.
+
+**The integer-error-code pattern** (Redox kernel, Linux syscall ABI):
+
+```rust
+// Kernel returns negative integer error codes directly.
+// Internally, use a typed enum; convert at the boundary.
+
+#[repr(isize)]
+pub enum SyscallError {
+    Success = 0,
+    NotFound = -2,       // ENOENT
+    Permission = -13,    // EACCES
+    InvalidArg = -22,    // EINVAL
+    // ... maps to POSIX errno values
+}
+
+// Syscall entry — must return raw isize for ABI compatibility
+pub extern "C" fn sys_open(path: *const u8, len: usize) -> isize {
+    let result: Result<FileHandle, SyscallError> = open_internal(path, len);
+    match result {
+        Ok(fh) => fh.0 as isize,         // Non-negative = fd
+        Err(e) => e as isize,             // Negative = error code
+    }
+}
+```
+
+**Principle:** use typed `Result<T, TypedError>` internally; convert to the ABI representation only at the boundary. The internal code benefits from Rust's error handling; the ABI stays C-compatible.
+
+**Related domains:**
+- `extern "C"` libraries consumed from C (wrap returns in negative-ints-or-nonnegative pattern, or use an out-pointer + bool)
+- Embedded drivers where the hardware reports errors as bitfields (decode at the boundary into a typed enum)
+- POSIX/BSD syscalls (same pattern)
+
+This isn't an anti-pattern — it's the correct pattern for these specific boundaries. The "NEVER use `Box<dyn Error>` in library APIs" rule doesn't apply where the API isn't Rust-to-Rust.
+
 ## Decision 8 — Recovery strategies
 
 For each error variant, plan the recovery:

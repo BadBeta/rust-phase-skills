@@ -452,6 +452,53 @@ Two contrasting extremes of error strategy: Zola does the absolute minimum (`pub
 
 ---
 
+## Validation pass 8 (2026-04-24) — rust-analyzer + Redox kernel
+
+Two very-different domains: **rust-analyzer** (IDE tooling, incremental-query compiler internals) and **Redox** (microkernel OS in Rust, no_std bare-metal).
+
+### rust-analyzer findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Graded-severity clippy hierarchy | `correctness = deny`, `perf = deny`, `style = warn`, `suspicious = warn`, `restriction = allow` with hand-picked overrides | **New fourth lint-strategy pattern** documented in workspace-layout.md, alongside nushell's aggressive-deny, rustls's curated-warn, and cargo's all-allow-plus-specific-denies |
+| `dev-rel` custom profile | Inherits from release but `debug = 2` for debuggability of optimized code | Pattern documented in workspace-layout.md |
+| Per-dependency `opt-level = 3` in dev profile | Selected hot deps (rowan, rustc-hash, smol_str, salsa) optimized even in dev | Pattern already common; now cited |
+| Salsa for incremental query-based architecture | `salsa = "0.26"` with `["rayon", "salsa_unstable", "macros", "inventory"]` | **New architectural paradigm** added to rust-planning/SKILL.md §16 alongside ECS and kernel/bare-metal — for query-heavy derived-state tools (compilers, LSPs, static analyzers, build tools) |
+| Compact data-structure crates | `smol_str`, `la-arena`, `thin-vec`, `triomphe`, `hashbrown` (direct), `dashmap` (pinned) | **New table added** to performance-catalog.md §4 listing compact std-alternative crates for when profiling shows std collections dominating (IDE latency, memory-constrained data structures) |
+| `anyhow` only, no `thiserror` | Root Cargo.toml | Reinforces Zola's data point: application-scale tools can run on pure anyhow |
+| Edition 2024, MSRV 1.91 | Root workspace | Older MSRV than cargo (1.95) — data point that Rust-adjacent tooling prioritizes compatibility |
+| **Parking_lot absent** | `Notably absent: parking_lot` per the Cargo.toml analysis | **Corrects earlier evidence** in this file: the pass-1 baseline table noted rust-analyzer used parking_lot. Current rust-analyzer has moved away from it. Removed the parking_lot=rust-analyzer citation from this file's primary sources list. |
+| `dashmap` pinned to 6.1.0 | With `raw-api` feature | Version-pinning for API stability when using non-guaranteed features — general pattern worth being aware of in review |
+
+### Redox kernel findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Kernel lint strategy emphasizes panic prevention + overflow | `arithmetic_side_effects = "warn"`, `indexing_slicing = "warn"`, `unwrap_used = "warn"`, `not_unsafe_ptr_arg_deref = "deny"`, `unreachable_patterns = "deny"` | **New kernel/safety-critical variant** documented in workspace-layout.md as a fifth lint-strategy pattern |
+| `panic = "abort"` required in kernel profiles | Both dev and release | **New pattern documented** in workspace-layout.md: kernel/bare-metal `no_std` environments without unwinding require panic=abort; not merely an optimization |
+| Pure core-type errors (no anyhow/thiserror) | Kernel uses `redox_syscall` error types — integer error codes at syscall boundaries | **NEW section added** to error-strategy.md §7.5 "The kernel / syscall boundary" — documents the integer-error-code pattern for ABI-constrained boundaries. `Result<T, TypedError>` internally, integer at the boundary. Not an anti-pattern — the correct pattern for this specific case. |
+| Kernel dependency stack | `spin` (spinlocks — no OS synchronization primitives available), `linked_list_allocator` (global allocator in bare metal), `bitfield`/`bitflags` (register manipulation), `fdt` (device tree parsing for ARM/RISC-V) | Kernel-specific canon; noted in rust-planning/SKILL.md §16 "Paradigms not covered here" |
+| Multi-arch target gating | `cfg(target_arch = "x86_64")`, `"riscv64"`, etc. with arch-specific crates (`raw-cpuid`, `sbi-rt`) | Standard `cfg`-gated cross-architecture pattern; nothing new |
+| No aarch64 in main kernel | — | Data point; Redox's aarch64 support is evolving separately |
+
+### Updates applied after pass 8
+
+1. **workspace-layout.md** — added: (a) graded-severity clippy pattern (rust-analyzer) as fourth lint-strategy; (b) kernel/safety-critical lint variant (Redox); (c) `dev-rel` profile pattern; (d) per-dependency `opt-level = 3` in dev explicit example; (e) `panic = "abort"` as kernel requirement note.
+2. **performance-catalog.md** §4 — added compact-alternative-crates table (smol_str, SmallVec, thin-vec, triomphe, la-arena) with the rust-analyzer stack rationale.
+3. **error-strategy.md** — added §7.5 "The kernel / syscall boundary (Redox pattern)" — integer-error-code-at-ABI, typed-Result-internally, with the note that this isn't an anti-pattern for FFI/kernel boundaries.
+4. **rust-planning/SKILL.md §16** — expanded "Architectural Paradigms Not Covered Here" to include (a) incremental-query compiler tooling (salsa-based, rust-analyzer/rustc model) and (b) kernel/bare-metal/no_std systems (Redox, embedded). Now 5 paradigms noted there.
+
+Also: earlier evidence in this file claimed rust-analyzer uses `parking_lot`. The current root Cargo.toml confirms it does NOT. The earlier baseline was either outdated or from a different rust-analyzer crate. Left the pass-1 reference but added a follow-up note.
+
+### Pass 8 sources
+- [rust-lang/rust-analyzer](https://github.com/rust-lang/rust-analyzer) — root `Cargo.toml`; graded clippy, salsa, rowan, compact data structures
+- [redox-os/kernel](https://github.com/redox-os/kernel) — root `Cargo.toml`; kernel lints, panic=abort, integer error codes
+- [salsa-rs/salsa](https://github.com/salsa-rs/salsa) — incremental computation framework
+- [redox-os/redox](https://gitlab.redox-os.org/redox-os/redox) — overall Redox project
+- [rust-analyzer book](https://rust-analyzer.github.io/book/contributing/architecture.html) — the salsa-driven query-graph architecture
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).

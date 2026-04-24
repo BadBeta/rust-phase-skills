@@ -67,6 +67,24 @@ type_complexity = "allow"
 # (bevy uses `[workspace.lints.rust] unsafe_code = "deny"`, then individual
 # crates add `#[allow(unsafe_code)]` where needed. Different from rustls's
 # per-crate `#![forbid(unsafe_code)]` — deny+allow is escapable, forbid is not.)
+# Graded-severity pattern (rust-analyzer): promote clippy categories to
+# different severity levels rather than hand-picking individual lints. This
+# is the fourth lint-strategy pattern alongside nushell's "aggressive deny",
+# rustls's "extensive curated warn", and cargo's "all=allow + correctness=warn
+# + specific denies":
+#   [workspace.lints.clippy]
+#   correctness = { level = "deny", priority = -1 }
+#   perf = { level = "deny", priority = -1 }
+#   style = { level = "warn", priority = -1 }
+#   suspicious = { level = "warn", priority = -1 }
+#   restriction = { level = "allow", priority = -1 }
+#   # then hand-pick specific restriction lints back up to warn/deny
+# Kernel/safety-critical variant (Redox kernel): emphasizes panic prevention
+# and overflow:
+#   arithmetic_side_effects = "warn"  # flag integer overflow risk
+#   indexing_slicing = "warn"          # flag [i] that can panic — use .get()
+#   unwrap_used = "warn"               # require expect() with rationale
+#   not_unsafe_ptr_arg_deref = "deny"  # fn taking *ptr must be unsafe fn
 
 # Workspace may patch itself (rustls pattern) — ensures downstream ecosystem
 # crates that depend on `rustls` via crates.io actually use THIS workspace's
@@ -86,6 +104,26 @@ codegen-units = 16
 # info. Trade-off: larger binaries (sometimes 3-10x). Worth it for
 # long-running services where post-hoc debugging of production issues is
 # a requirement.
+
+# Rust-analyzer pattern: `dev-rel` profile that inherits from release but
+# keeps full debug symbols, for use when debugging optimized code:
+#   [profile.dev-rel]
+#   inherits = "release"
+#   debug = 2
+# Invoke with: cargo build --profile dev-rel
+
+# Per-dependency opt-level in dev (rust-analyzer, also common elsewhere):
+# speed up dev builds by optimizing hot-path dependencies even in dev mode:
+#   [profile.dev.package.rowan]     opt-level = 3
+#   [profile.dev.package.rustc-hash] opt-level = 3
+#   [profile.dev.package.smol_str]  opt-level = 3
+#   [profile.dev.package.salsa]     opt-level = 3
+# Or the blanket form covering all deps (seen in many projects):
+#   [profile.dev.package."*"]       opt-level = 3
+# Kernel pattern: `panic = "abort"` is required (not optional) in bare-metal
+# / no_std environments without unwinding support:
+#   [profile.release]  panic = "abort"
+#   [profile.dev]      panic = "abort"
 
 # Packaging profile — slower compile, smallest+fastest binary
 [profile.release-lto]

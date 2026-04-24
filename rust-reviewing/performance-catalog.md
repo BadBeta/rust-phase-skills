@@ -75,11 +75,24 @@ let s: String = items.iter().map(|i| format!("{i}\n")).collect();
 // OR — use itertools::join
 ```
 
-### 4. `HashMap::insert` dominates flamegraph
+### 4. `HashMap::insert` dominates flamegraph — or any std collection shows up hot
 
-**Symptom:** Significant time in HashMap insertion or lookup.
+**Symptom:** Significant time in std HashMap/String/Vec operations.
 
-**Root cause:** Default hasher (SipHash) is deliberately slow to resist collision attacks. For trusted input (internal keys), faster hashers give big speedups.
+**Compact-alternative crates (rust-analyzer stack)** — when profiling shows std collections dominating, consider replacements designed for specific usage patterns:
+
+| Std type | Alternative | When |
+|---|---|---|
+| `String` (many short) | `smol_str::SmolStr` | Strings mostly ≤ 22 bytes inlined; no allocation for short strings |
+| `Vec<T>` (small, known cap) | `smallvec::SmallVec<[T; N]>` | Most cases fit in inline N; heap only when they don't |
+| `Vec<T>` (compact footprint matters) | `thin-vec::ThinVec<T>` | 1-word size (1 pointer); smaller than `Vec` (3 words) in memory-constrained data structures |
+| `Arc<T>` (no weak refs) | `triomphe::Arc<T>` | Skip the Weak-ref count word; smaller, faster |
+| `HashMap<K, V>` id-keyed | `la_arena::Arena<T>` + `Idx<T>` | When keys are sequentially-allocated IDs; index-based access, no hashing |
+| `HashMap<K, V>` fast | `FxHashMap` / `AHashMap` / `xxhash-rust` based | Trusted input; see below for the hasher decision |
+
+rust-analyzer uses all of these — its data structures are tuned for IDE latency where tiny constant factors matter. For typical apps, the std types are fine; reach for alternatives when profiling shows a specific pattern dominating.
+
+**Root cause (for HashMap hasher specifically):** Default hasher (SipHash) is deliberately slow to resist collision attacks. For trusted input (internal keys), faster hashers give big speedups.
 
 **Fix:**
 ```rust
