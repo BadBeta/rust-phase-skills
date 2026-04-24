@@ -90,6 +90,10 @@ let mut m: AHashMap<Key, Value> = AHashMap::new();
 // Or fxhash (fastest, not DoS-resistant — internal use only)
 use fxhash::FxHashMap;
 let mut m: FxHashMap<Key, Value> = FxHashMap::default();
+
+// xxhash-rust — very fast, used by polars for high-throughput columnar hashing
+use xxhash_rust::xxh3::Xxh3;
+// Use with HashMap::with_hasher / BuildHasherDefault
 ```
 
 ### 5. `collect` + `iter` chain back-to-back

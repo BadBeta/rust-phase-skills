@@ -106,8 +106,36 @@ The trait is designed by the caller's need, not dictated by the implementor's co
 | DB rollback per test | `#[sqlx::test]` | Postgres-backed tests |
 | Docker deps | **testcontainers** | Redis, full Postgres, Elasticsearch, etc. |
 | Recorded HTTP interactions | **vcr** (record-and-replay) | External APIs in integration tests |
+| Parametrized (table-driven) tests | **rstest** | `#[case]`/`#[values(...)]` generating one cargo-test per case (nushell pattern) |
+| Prettier `assert_eq!` diffs | **pretty_assertions** | Large-struct diffs in test output |
 
 **Rule:** mock boundaries, not internals. Mocking a module's private function means you're testing implementation, not behavior.
+
+### `rstest` for parametrized tests
+
+Nushell uses `rstest` extensively. It replaces hand-rolled for-loops over test data with a macro that produces one independent cargo-test per case:
+
+```rust
+use rstest::rstest;
+
+#[rstest]
+#[case(2, 2, 4)]
+#[case(0, 5, 5)]
+#[case(-3, 3, 0)]
+fn add(#[case] a: i32, #[case] b: i32, #[case] expected: i32) {
+    assert_eq!(a + b, expected);
+}
+
+// Or: value lists that cross-product
+#[rstest]
+fn bind_port(
+    #[values("1.2.3.4:8000", "127.0.0.1:8000")] addr: SocketAddr,
+) {
+    assert_eq!(addr.port(), 8000);
+}
+```
+
+Benefits over a hand-rolled loop: each case is independently named in test output; cargo test failure lists the specific case; works with `#[tokio::test]` for async.
 
 ## Decision 5 — Property-based testing scope
 

@@ -281,3 +281,55 @@ Additional evidence collected against `zed-industries/zed` to test the new skill
 - [Zed blog — Async Rust (Zed Decoded)](https://zed.dev/blog/zed-decoded-async-rust) — custom GPUI runtime rationale
 - [GPUI README](https://github.com/zed-industries/zed/blob/main/crates/gpui/README.md)
 - Antonio Scandurra's property-based concurrency testing talk (Zed engineering)
+
+### Validation pass 3 (Polars + Nushell, 2026-04-24)
+- [pola-rs/polars](https://github.com/pola-rs/polars) — root `Cargo.toml`, `crates/polars-core/Cargo.toml`, `crates/polars-error/src/lib.rs`
+- [nushell/nushell](https://github.com/nushell/nushell) — root `Cargo.toml`, `crates/nu-protocol/Cargo.toml`, `crates/nu-protocol/src/errors/shell_error/mod.rs`
+- [bytemuck docs](https://docs.rs/bytemuck/latest/bytemuck/) — `Pod`/`Zeroable` trait design
+- [rstest docs](https://docs.rs/rstest/latest/rstest/) — parametrized test macro
+- [miette docs](https://docs.rs/miette/latest/miette/) — `Diagnostic` derive and attributes
+
+---
+
+## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
+
+Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).
+
+### Polars findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Hand-rolled error pattern at scale | `PolarsError` — 15 variants, no thiserror, manual `impl Error + Display + From`; NO `#[non_exhaustive]` | Confirmed; polars added to the hand-rolled-error list (ripgrep, tokio, hyper, serde, polars). |
+| `PolarsResult<T>` type alias | `pub type PolarsResult<T> = Result<T, PolarsError>;` | Added as pattern to error-strategy.md |
+| `ErrString(Cow<'static, str>)` for error messages | Avoids allocation for canned error strings | New pattern documented in error-strategy.md |
+| `Arc<io::Error>` to make enclosing errors `Clone` | `IO { error: Arc<io::Error>, msg: Option<ErrString> }` | New pattern documented in error-strategy.md |
+| Rayon for CPU parallelism | Rayon as direct dep; `.par_iter()` patterns | Confirmed; no change |
+| Tokio used selectively for I/O | Tokio present but not the primary runtime | Confirmed; polars is a good example of "sync library, async escape hatch" |
+| `bytemuck::Pod`/`Zeroable` for safe transmutation | polars-core has `bytemuck` as direct dep | **New section added** to unsafe-strategy.md |
+| `xxhash-rust` as hasher | Used for columnar hashing | **Added** as third option in performance-catalog.md (alongside ahash / fxhash) |
+| Minimal `[workspace.lints]` | Only `collapsible_if = "allow"`, nothing else | Data point: even major projects don't always use extensive curated lints; the rule "avoid blanket pedantic" holds. |
+| 10-member workspace + Edition 2024 | — | Confirmed |
+
+### Nushell findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| `thiserror` + `miette` combination for CLI errors | `ShellError` derives **both** `thiserror::Error` AND `miette::Diagnostic`; full use of `#[diagnostic(code(...))]`, `#[label]`, `#[help]`, `#[source_code]`, `#[related]`, `#[error(transparent)] #[diagnostic(transparent)]` | **New section added** to error-strategy.md as "the CLI-app stack" |
+| miette + thiserror + anyhow all coexist | All three in nushell's workspace.dependencies | Confirmed; validates the existing advice that they coexist |
+| `#[diagnostic(code(ns::category::name))]` | nushell uses codes like `nu::shell::variable_not_found` | Added as pattern element in error-strategy.md |
+| MSRV declared for an end-user app | nushell declares `rust-version = "1.93.1"` | **Contradicts earlier Zed-based framing.** Updated rust-planning/SKILL.md §5.6: MSRV is optional for apps; declaring buys build reproducibility + shield against silent toolchain creep. |
+| Aggressive workspace clippy lints | `unwrap_used = "deny"`, `format_push_string = "warn"`, `unchecked_time_subtraction = "warn"` | Confirmed; cited in workspace-layout.md as "aggressive project example" |
+| Tiered feature architecture | `full` (non-mutually-exclusive) / `default` (core capabilities) / `stable` (alias of default) | **New section added** to workspace-layout.md |
+| Multiple custom profiles | `release` with `opt-level = "s"`, `profiling`, `ci` | Confirmed |
+| `rstest` for parametrized tests | Used across nushell tests | **New section added** to test-strategy.md; also added to the mocking-strategy table |
+| `pretty_assertions` for prettier `assert_eq!` diffs | Dev-dependency | Added to test-strategy.md mocking table |
+| 39-member workspace, Edition 2024 | — | Confirmed |
+
+### Summary of skill updates applied after pass 3
+
+1. **error-strategy.md** — added polars hand-rolled `ErrString(Cow<'static, str>)` + `Arc<io::Error>` patterns; added the full nushell thiserror+miette CLI-app stack with the complete list of miette attributes (`#[diagnostic(code)]`, `#[label]`, `#[help]`, `#[source_code]`, `#[related]`, `#[error(transparent)]`)
+2. **unsafe-strategy.md** — added `bytemuck::Pod`/`Zeroable` section with Pod constraints and typical use cases (wire protocols, GPU uploads, arrow/columnar data)
+3. **test-strategy.md** — added `rstest` for parametrized tests, `pretty_assertions` for prettier diffs
+4. **workspace-layout.md** — added tiered `full`/`default`/`stable` feature architecture pattern; added nushell's `unwrap_used = "deny"` as aggressive-lint example
+5. **performance-catalog.md** — added `xxhash-rust` as third hasher option (alongside ahash, fxhash); cited polars as user
+6. **rust-planning/SKILL.md §5.6** — MSRV framing nuanced: optional for apps, with Zed-vs-nushell as contrasting examples

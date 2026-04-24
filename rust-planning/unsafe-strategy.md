@@ -116,6 +116,32 @@ std::mem::forget(guard);  // Completed successfully; cancel the abort
 - **Atomic primitives** (`AtomicU64`, etc.) are safe; ordering is a correctness question. Default to `Ordering::SeqCst` unless you've studied the memory model.
 - **`UnsafeCell<T>`** is the primitive for interior mutability. Usually wrap in `Mutex`, `RwLock`, or an atomic.
 
+### `bytemuck` for safe transmutation
+
+Many "unsafe" needs in data-processing code are really "I need to reinterpret these bytes as a `T`" — `bytemuck` replaces hand-rolled `std::mem::transmute` with a marker-trait system that's checked at compile time.
+
+```rust
+use bytemuck::{Pod, Zeroable};
+
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct Rgba { r: u8, g: u8, b: u8, a: u8 }
+
+// Safe: the compiler verified Pod + Zeroable are correctly implementable
+let bytes: &[u8] = bytemuck::cast_slice(&rgba_pixels);
+let back: &[Rgba] = bytemuck::cast_slice(bytes);
+
+// Zero-init a buffer of Pod type:
+let buf = vec![Rgba::zeroed(); 1024];
+```
+
+Constraints for `Pod`:
+- Type must be inhabited (no `Infallible`)
+- All bit patterns must be valid (no `bool`, `char`, `NonZeroU8`)
+- No padding bytes
+
+**When to use:** reading file formats, parsing wire protocols, GPU buffer uploads, arrow/columnar data (this is why polars and wgpu both depend on bytemuck). Replaces a lot of `unsafe { std::mem::transmute(...) }` with compile-time-verified safe calls.
+
 ## Decision 5 — CI hardening for unsafe crates
 
 Every crate with `unsafe` blocks should have these in CI:

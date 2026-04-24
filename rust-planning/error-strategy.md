@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
 }
 ```
 
-### Hand-rolled pattern (ripgrep, tokio, hyper, serde)
+### Hand-rolled pattern (ripgrep, tokio, hyper, serde, polars)
 
 For top-tier libraries where every aspect of error representation matters:
 
@@ -91,6 +91,68 @@ impl From<io::Error> for Error { /* ... */ }
 Benefits: small `Error` size (8 bytes on 64-bit), explicit variants, room for backtraces and context, `#[non_exhaustive]` at both `Error` and `ErrorKind`.
 
 Cost: more boilerplate; usually only worth it for widely-used libraries.
+
+### Advanced variants from polars
+
+For very high-throughput libraries, two polars techniques worth knowing:
+
+```rust
+// (1) ErrString(Cow<'static, str>) — allocate only when the error message
+//     is dynamic; use static &str for canned messages (no allocation on
+//     happy-path error construction)
+pub struct ErrString(Cow<'static, str>);
+impl From<&'static str> for ErrString { /* ... */ }
+impl From<String> for ErrString { /* ... */ }
+
+// (2) Arc<io::Error> — io::Error is NOT Clone. Wrapping it in Arc makes
+//     the enclosing error type Clone without losing information. Polars
+//     does: IO { error: Arc<io::Error>, msg: Option<ErrString> }.
+pub enum PolarsError {
+    IO { error: Arc<io::Error>, msg: Option<ErrString> },
+    // ... 14 more variants
+}
+
+pub type PolarsResult<T> = Result<T, PolarsError>;
+```
+
+Also: polars does NOT use `#[non_exhaustive]` on `PolarsError` — this is deliberate, consistent with the "exhaustive matching is a feature for app-internal callers" principle. Published library + exhaustive enum = explicit decision that the variant set is stable.
+
+### The CLI-app stack: thiserror + miette
+
+For CLIs and developer tools that produce user-facing diagnostic output (compiler-style with source-code highlighting), derive **both** `thiserror::Error` AND `miette::Diagnostic` on the same enum. This is nushell's pattern:
+
+```rust
+use miette::Diagnostic;
+use thiserror::Error;
+
+#[derive(Debug, Clone, Error, Diagnostic, PartialEq)]
+pub enum ShellError {
+    #[error("variable not found: {name}")]
+    #[diagnostic(
+        code(nu::shell::variable_not_found),
+        help("check the spelling or define `{name}` first")
+    )]
+    VariableNotFound {
+        name: String,
+        #[label = "not defined in this scope"]
+        span: Span,
+    },
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Io(#[from] IoError),
+}
+```
+
+Key miette features exercised by nushell:
+- `#[diagnostic(code(ns::category::name))]` — machine-readable codes for tooling
+- `#[label = "..."]` on a span-bearing field → source-code underline
+- `#[help]` attribute / inline `help("...")` in `#[diagnostic(...)]` → suggestions to user
+- `#[source_code]` — attach the source for the span to render
+- `#[related]` — chain related errors (common compile-error shapes)
+- `#[error(transparent)] #[diagnostic(transparent)]` — delegate both traits to an inner error for one-level-deeper variants
+
+This is the modern idiomatic stack for CLI / language / developer tool error reporting. Use it when human users will read the errors.
 
 ## Decision 3 — Multi-layer error translation
 

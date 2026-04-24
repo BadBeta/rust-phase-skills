@@ -52,6 +52,8 @@ needless_pass_by_value = "warn"
 unwrap_used = "warn"         # Catch unwraps; override per-module where needed
 # Allow type_complexity — generic-heavy frameworks like axum need this
 type_complexity = "allow"
+# Aggressive project example: nushell sets `unwrap_used = "deny"` at workspace
+# level (CI fails on any unwrap). This pairs with #[cfg(test)] overrides.
 
 # Common profiles
 [profile.release]
@@ -187,6 +189,31 @@ Build one specific binary:
 cargo build --bin api-server --features api --no-default-features
 cargo build --bin worker --features worker --no-default-features
 ```
+
+**Tiered feature architecture (nushell pattern):**
+
+When a large application has many optional capabilities, tier them:
+
+```toml
+[features]
+default = ["plugin", "trash", "sqlite", "network", "rustls-tls", "mcp"]
+stable = ["default"]                # alias of default for consumers pinning "stability"
+full = [                            # everything non-mutually-exclusive
+    "default",
+    "dataframe",
+    "experimental-profile-runner",
+    # ...
+]
+
+plugin = ["dep:nu-plugin-core"]
+trash = ["dep:trash"]
+# ... per-capability features
+```
+
+Benefits:
+- Users pick a tier (`default`, `full`) without enumerating individual features
+- `stable` alias signals stability commitment separately from feature composition
+- Individual features remain granular for build-size tuning
 
 **Facade crate with feature-gated subcrates (ripgrep pattern):**
 ```toml

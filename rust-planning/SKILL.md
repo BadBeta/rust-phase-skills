@@ -496,7 +496,7 @@ These principles hold at every scale:
 ### 5.6 Edition and MSRV
 
 - **Edition 2024** (stabilized in Rust 1.85.0) is the default for new projects — RPIT lifetime capture improvements, `unsafe extern` blocks, `gen` keyword reservation. Previous editions remain fully supported; picking 2024 just unlocks the newest ergonomics.
-- **MSRV (Minimum Supported Rust Version)** is a commitment. For libraries: state in README and CI. For applications: tie to the oldest rustc you support in your deployment environment. `rust-version = "1.85"` in `Cargo.toml`.
+- **MSRV (Minimum Supported Rust Version)** is a commitment. For libraries: state in README and CI. For applications: tie to the oldest rustc you support in your deployment environment. `rust-version = "1.85"` in `Cargo.toml`. **Data from validation:** Zed (end-user app) does NOT declare MSRV; nushell (end-user app) DOES, at `1.93.1`. Declaring it in an app buys build-reproducibility and a shield against accidental dep bumps that silently raise your toolchain floor — but is optional. Declaring it in a library is expected.
 - **Async closures** (stabilized in 1.85.0) are edition-independent — work on all editions.
 
 ### 5.7 Rust as Embedded Library (NIF/FFI Architecture)
