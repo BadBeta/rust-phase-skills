@@ -254,6 +254,56 @@ cargo build --bin api-server --features api --no-default-features
 cargo build --bin worker --features worker --no-default-features
 ```
 
+**Pure-Rust vs C-binding dual stack (image-rs pattern):**
+
+When a library's function can be implemented in pure Rust (safer, smaller dep graph) AND via a mature C library (faster, more features), offer both and let users pick via features:
+
+```toml
+[features]
+default = ["ravif"]         # pure-Rust AVIF encoder/decoder
+ravif = ["dep:ravif"]
+avif-native = ["dep:dav1d"] # C-based AVIF via libdav1d
+```
+
+`image-rs/image` defaults to pure-Rust decoders across almost every format (`zune-jpeg`, `png`, `gif`, `qoi`, `ravif`) with C-backed options as opt-in features. Users weigh pure-Rust safety vs C performance per format.
+
+**Feature composition for compound capabilities:**
+
+When one feature implies another, express the dependency in the feature list:
+
+```toml
+[features]
+bmp = []
+png = ["dep:png"]
+ico = ["bmp", "png"]    # ICO format needs BMP + PNG to decode its embedded sub-images
+```
+
+This keeps the user's mental model simple ("enable `ico` to get ICO support") while the crate internally composes the required primitive features.
+
+**Feature-as-license-decision (ffmpeg-next pattern):**
+
+When a library has components under different licenses, gate them behind features so users must explicitly opt in:
+
+```toml
+[features]
+default = ["codec", "format", "filter"]
+# Licensing variants — user must explicitly opt into GPL-linked components
+gpl = []               # enable GPL-only FFmpeg components (libx264, libx265)
+nonfree = []           # enable non-free FFmpeg components (fdk-aac, nvenc)
+v3 = []                # use LGPL v3 rather than v2.1
+```
+
+ffmpeg-next does this for GPL, nonfree, and LGPL-v3-vs-v2.1. The feature isn't about functionality — it's about license commitment. Compliance is now an explicit build-time decision rather than a hidden transitive consequence.
+
+**Massive feature surface for component libraries (ffmpeg-next):**
+
+Some wrappers over large C libraries expose 30+ features — one per codec, one per filter, one per protocol. This is appropriate when:
+- The underlying library has independent optional components
+- Users typically want only a subset
+- Binary size / license / CVE exposure all benefit from explicit opt-in
+
+The counter-pattern (single `full` feature) pulls in everything including vulnerabilities in components you don't use.
+
 **Orthogonal-axis features (tokio-modbus pattern):**
 
 When a protocol or library has multiple independent dimensions — transport × mode × sync-vs-async, or backend × logger × allocator — organize features along orthogonal axes rather than hierarchical tiers:

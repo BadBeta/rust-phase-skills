@@ -564,6 +564,51 @@ Validated against the industrial-protocol domain: **locka99/opcua** (full OPC UA
 
 ---
 
+## Validation pass 11 (2026-04-24) — image + ffmpeg-next (multimedia processing)
+
+Validated against the image and video processing domain: **image-rs/image** (the canonical pure-Rust image library) and **ffmpeg-next** (Rust bindings to FFmpeg — video/audio via heavy C FFI).
+
+### image-rs/image findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| Single-crate library with per-format feature flags | Features: `avif`, `bmp`, `exr`, `ff`, `gif`, `hdr`, `ico`, `jpeg`, `png`, `pnm`, `qoi`, `tga`, `tiff`, `webp`. Default enables common ones via `default-formats`. | Classic "capability-as-feature" pattern at 14 formats |
+| Pure-Rust-vs-C-binding dual stack | Pure-Rust `ravif` as default AVIF encoder; opt-in `avif-native` pulls in C-based `dav1d`. Similar choice per format throughout the crate. | **New pattern documented** in workspace-layout.md: let users pick pure-Rust (safer, smaller deps) vs C-based (faster, more features) per capability. |
+| Feature composition for compound capabilities | `ico = ["bmp", "png"]` — ICO decoding requires both sub-formats | **New pattern documented** — compound features that compose primitive features. Cargo supports this natively; worth knowing as an intentional design tool. |
+| `bytemuck` + `byteorder-lite` for pixel format manipulation | Direct deps | bytemuck use confirmed yet again across data-heavy crates |
+| Edition 2021, MSRV 1.88 | Root `Cargo.toml` | Data point: MSRV 1.88 is later than rust-analyzer (1.91) but earlier than cargo (1.95) and Bevy (1.95). Libraries with broad user bases tend to lag the bleeding edge. |
+| No custom profiles | Uses Rust defaults | Data point: not every published library needs custom profiles; defaults are fine for pure-Rust compute-heavy crates where users set their own release tuning. |
+| No `[workspace.lints]` | Single crate | Single-crate libraries can't use workspace lints (by definition); alternative would be `#![warn(...)]` at crate root, which this crate also doesn't heavily configure. Data point on variability. |
+
+### ffmpeg-next findings
+
+| Claim | Evidence | Update |
+|---|---|---|
+| `-sys` + safe-wrapper crate pair for large C library FFI | `ffmpeg-sys-next` (raw FFI) + `ffmpeg-next` (safe wrappers) | **New canonical pattern documented** in rust-planning/unsafe-strategy.md §9.3.1 — the `*-sys` + safe-wrapper split with rationale (re-use across wrappers, isolated rebuilds, review boundary, separate linking story). Listed other `-sys` pairs: openssl-sys/openssl, libgit2-sys/git2, curl-sys/curl, zstd-sys/zstd, libsqlite3-sys/rusqlite. |
+| Massive feature surface (30+ codec/filter features) | Individual features for x264, x265, opus, vorbis, gnutls, openssl, fontconfig, freetype, opencv, vmaf, etc. | **New pattern documented** in workspace-layout.md: massive feature surface appropriate for wrappers over large multi-component C libraries. Binary size, license, CVE exposure all benefit from explicit opt-in. Counter-pattern is a single `full` feature. |
+| Feature-as-license-decision | `gpl`, `nonfree`, `v3` features gate GPL-licensed, non-free, and LGPL-v3 components | **New pattern documented** — license commitment as explicit build-time decision rather than hidden transitive consequence. Particularly important for wrappers over permissively-licensed libraries that have commercially-incompatible plugins. |
+| Platform-specific feature gates | RPi support, hardware acceleration toggles | Consistent with embassy/embedded patterns — platform-specific features are standard |
+| `build = "build.rs"` delegated to `-sys` crate | Safe wrapper doesn't duplicate linking logic | Reinforces the `-sys` split rationale |
+| No edition/MSRV visible in excerpt | Either defaults or specified outside this section | Data point: metadata requirements vary per project |
+
+### Updates applied after pass 11
+
+1. **rust-planning/unsafe-strategy.md** — added §9.3.1 "The `*-sys` + safe-wrapper crate pair" with canonical examples (ffmpeg-sys-next/ffmpeg-next, openssl-sys/openssl, libgit2-sys/git2, etc.), rationale for the split, and when to use vs not.
+2. **rust-planning/workspace-layout.md** — added three new feature-architecture patterns:
+   - **Pure-Rust vs C-binding dual stack** (image-rs): offer both, default to pure-Rust, opt-in C for perf.
+   - **Feature composition** (image-rs `ico = ["bmp", "png"]`): compound features composing primitives.
+   - **Feature-as-license-decision** (ffmpeg-next `gpl`, `nonfree`, `v3`): license commitment as explicit opt-in.
+   - **Massive feature surface** (ffmpeg-next 30+ component features): appropriate for wrappers over large multi-component C libraries.
+
+### Pass 11 sources
+- [image-rs/image](https://github.com/image-rs/image) — root `Cargo.toml`, format feature matrix
+- [zmwangx/rust-ffmpeg](https://github.com/zmwangx/rust-ffmpeg) — ffmpeg-next, root `Cargo.toml`, 30+ features
+- [Cargo Book — `-sys` packages](https://doc.rust-lang.org/cargo/reference/build-scripts.html#-sys-packages) — naming convention
+- [ravif](https://github.com/kornelski/cavif-rs/tree/main/ravif) — pure-Rust AVIF encoder
+- [zune-image](https://github.com/etemesi254/zune-image) — related pure-Rust image library mentioned as comparison
+
+---
+
 ## Validation pass 3 (2026-04-24) — Polars (data/perf) and Nushell (shell/CLI)
 
 Additional evidence from two new domains: **polars** (columnar data, SIMD-heavy, published library on crates.io) and **nushell** (large extensible shell, end-user application with plugin system).

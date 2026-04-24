@@ -89,6 +89,34 @@ pub unsafe fn from_raw_parts<'a>(ptr: *const u8, len: usize) -> &'a str {
 | Embed in Java / Android | `jni` |
 | Embed in Node | `neon`, `napi-rs` |
 
+### The `*-sys` + safe-wrapper crate pair (canonical large-library FFI)
+
+For wrapping a large C library (FFmpeg, OpenSSL, libgit2, libcurl, libraw, GStreamer, ...), the canonical Rust pattern is **two** crates:
+
+| Crate | Purpose |
+|---|---|
+| `<lib>-sys` | Raw FFI bindings only — `extern "C"` declarations, `#[repr(C)]` types, constants. Output of `bindgen` or hand-written. Unsafe to call directly. Handles linking (pkg-config, build-from-source, vendored sources). |
+| `<lib>` (or `<lib>-rs`, `<lib>-next`) | Safe Rust wrappers on top of the `-sys` crate. Owns resource lifetimes via `Drop` impls that call the C cleanup function, exposes typed errors, provides idiomatic Rust APIs. |
+
+Examples:
+- `ffmpeg-sys-next` / `ffmpeg-next`
+- `openssl-sys` / `openssl`
+- `libgit2-sys` / `git2`
+- `curl-sys` / `curl`
+- `zstd-sys` / `zstd`
+- `libsqlite3-sys` / `rusqlite`
+
+**Why the split exists:**
+
+- **Re-use across wrappers**: multiple wrappers may want different safe-API surfaces on the same raw bindings. A dedicated `-sys` crate lets them share the link step.
+- **Isolated rebuilds**: the `-sys` crate rebuilds on C-library version changes; the safe wrapper rebuilds on Rust API changes. Incremental builds stay fast.
+- **Clearer review boundary**: all `unsafe extern "C"` declarations live in the `-sys` crate; the safe wrapper's unsafe is the *lifetime-management* kind rather than the bindings themselves.
+- **Separate linking story**: `-sys` crates handle pkg-config, build-from-source, and vendored sources; the safe wrapper doesn't need to know.
+
+**Cargo naming convention:** the `-sys` suffix is expected by crates.io reviewers for crates that link to native libraries. See the [Cargo Book `-sys` packages](https://doc.rust-lang.org/cargo/reference/build-scripts.html#-sys-packages) for the convention.
+
+**When to use:** any time you're wrapping a C library of ≥ a few KLOC or one you don't control. Smaller one-off FFI (a single C function or two) doesn't need the split — put the `extern "C"` and the safe wrapper in the same crate.
+
 ### Layout
 
 ```
