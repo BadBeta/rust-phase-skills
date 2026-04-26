@@ -367,6 +367,7 @@ When writing review comments, classify each finding. Block-severity findings pre
 ### 7.9 Security
 
 - [ ] Input validation at system boundaries (HTTP, CLI args, config files, untrusted deserialization)
+- [ ] No unbounded user-controlled allocation — `Vec::with_capacity(n)`, `vec![v; n]`, `String::with_capacity(n)`, `read_to_end(_)`, `Pixmap::new(w, h)` etc. where `n` / `w*h` is derived from external input must go through `.checked_mul()` + a `MAX_*` budget check first. See §7b #18.
 - [ ] No `String::from_utf8_unchecked` on user input
 - [ ] No SQL injection (parameterized queries only)
 - [ ] No format-string injection (no `format!("{}", user_input)` where user_input is a format string)
@@ -788,6 +789,50 @@ fn ssrf_blocks_private_ipv4() { /* ... */ }
 ```
 
 Review heuristic: `grep -rn "PLAN\.md\|TDD'd\|rust-planning §" src/` should return zero hits in shipped code. Citations belong in design docs (`PLAN.md`, `ARCHITECTURE.md`), never in `//!` / `///` comments.
+
+### 18. Unbounded user-controlled allocation
+
+```rust
+// BAD: `rows` and `cols` come from external input (HTTP body, NIF arg,
+// config file, deserialized field). `rows * cols` wraps `usize` in
+// release mode; the resulting `vec![]` either OOMs the process or
+// silently produces a too-small Vec that subsequent indexing reads
+// out of bounds. Either way: DoS surface, no error path, no recovery.
+fn new_buffer(rows: usize, cols: usize, default: f64) -> Vec<f64> {
+    vec![default; rows * cols]
+}
+```
+
+```rust
+// GOOD: validate dims with `.checked_mul()` against a hard budget
+// BEFORE allocating. Return a typed error so callers can map it to
+// the right HTTP / Elixir / CLI shape. The budget belongs in the
+// policy module — `MAX_CELLS` here would live in `policy.rs`
+// alongside other allocation budgets.
+const MAX_CELLS: usize = 1 << 30;  // 8 GiB at f64
+
+fn try_new_buffer(rows: usize, cols: usize, default: f64) -> Result<Vec<f64>, AllocError> {
+    let cells = rows.checked_mul(cols)
+        .ok_or(AllocError::SizeOverflow { rows, cols })?;
+    if cells > MAX_CELLS {
+        return Err(AllocError::TooLarge { cells, max: MAX_CELLS });
+    }
+    Ok(vec![default; cells])
+}
+```
+
+The same pattern catches HTTP `Content-Length`-driven `Vec::with_capacity`,
+image-decoder dimensions feeding `Pixmap::new(w, h).unwrap()` (the
+`.unwrap()` panics because the allocator returns `Option`/`Result`
+precisely because allocation can fail), and `read_to_end(&mut buf)` on a
+user-supplied stream. NIF crates have a dedicated row in rust-nif §3.1
+that surfaces it earlier; this pair generalizes the pattern.
+
+Review heuristic: any `Vec::with_capacity(_)`, `vec![_; _]`,
+`String::with_capacity(_)`, or `read_to_end(_)` whose capacity argument
+flows from a `pub fn` parameter, a deserialized struct field, or a
+`Binary` / `&[u8]` length without an explicit `<= MAX_*` check is the
+finding. Pair with rust-implementing §1 rule 20.
 
 ---
 
