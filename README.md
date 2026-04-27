@@ -35,7 +35,9 @@ The exemptions aim to make TDD enforcement only fire on genuinely new behavior. 
 
 ## Plans
 
-The exemptions aim to make TDD enforcement only fire on genuinely new behavior. Refactors should be silent. When the gate does fire, the message is the full annoying reminder every time on purpose. Because the cost of a missed reminder is high and the cost of a noticed one is small. Use `[no-TDD]` to cancel mid-session.
+For long-running, milestone-structured projects (ask for a milestone plan during planning) the hooks will force writing a skeleton milestone_skill_report.md with which skill sections were considered before starting the next step. 
+
+This is not about reporting file as such. It is that writing this forces Claude to focus, work and use the relevant skills section before implementing. This is the strongest skill-engagement mechanism in the stack for long projects. 
 
 ## Install
 
