@@ -39,7 +39,7 @@ The exemptions matter: TDD enforcement fires only on genuinely new behavior. Ref
 
 For long-running, milestone-structured projects (a `PLAN.md` with `M1:` / `M2:` / `M3:` … markers), `bb-milestone-skill-report.py` (PreToolUse) blocks edits to project files until `milestone_skill_report.md` has an entry for the active milestone listing which skill sections were considered before starting it.
 
-This is the strongest skill-engagement mechanism in the stack — not a passive reminder, not an "always cite" suggestion, but a hard gate on the next file edit. The LLM cannot start implementing M3 without first writing, visibly and verifiably, what it considered from `rust-planning`, `rust-implementing`, and `rust-reviewing` for that milestone. The plan and the skills are pulled into a single scan-able artifact that proves "the right knowledge was on the table when the work began."
+This is the strongest skill-engagement mechanism in the stack — not a passive reminder, not an "always cite" suggestion, but a hard gate on the next file edit. The LLM cannot start implementing M3 without first writing, visibly and verifiably, which skill sections were *relevant* to that milestone — not "all loaded skills," just the ones that apply. If a relevant skill hasn't been loaded yet, it gets loaded. If a loaded skill doesn't apply to this milestone, it gets omitted. The plan and the relevant skill fragments are pulled into a single scan-able artifact that proves "the right knowledge was on the table when the work began."
 
 `bb-milestone-commit-check.py` complements this by gating `M\d+:`-prefixed commits — the milestone must be marked DONE in `PLAN.md` before its commit is allowed.
 
