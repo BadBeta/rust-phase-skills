@@ -27,9 +27,6 @@
     "critique": [
       "rust-reviewing"
     ],
-    "dirty scheduler": [
-      "rust-nif"
-    ],
     "hexagonal": [
       "rust-planning"
     ],
@@ -49,7 +46,6 @@
       "rust-planning"
     ],
     "nif": [
-      "rust-nif",
       "rust-implementing"
     ],
     "plan ": [
@@ -69,22 +65,18 @@
       "rust-implementing"
     ],
     "rust wasm": [
-      "rust-wasm",
       "rust-implementing"
     ],
     "rustler": [
-      "rust-nif",
       "rust-implementing"
     ],
     "tauri": [
       "rust-implementing"
     ],
     "wasm": [
-      "rust-wasm",
       "rust-implementing"
     ],
     "webassembly": [
-      "rust-wasm",
       "rust-implementing"
     ]
   }

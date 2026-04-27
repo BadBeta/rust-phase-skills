@@ -75,5 +75,5 @@ Both `rust-phase-skills` and `elixir-phase-skills` can be installed side-by-side
 - `hooks/bb-rationale-marker-rust.py` — flags `// §§` rationale markers left in committed code
 - `hooks/bb-no-std-build-check.py` — verifies a `no_std` crate still builds after edits
 - `hooks/bb-anti-slop-patterns.d/rust.json` — Rust + C anti-slop patterns
-- `hooks/bb-skill-triggers.d/rust.json` — keyword → skill mappings for Rust topics
+- `hooks/bb-skill-triggers.d/rust.json` — 26 keyword → skill mappings, all targeting the three bundled skills (`rust-planning`, `rust-implementing`, `rust-reviewing`). Keywords that previously pointed to non-bundled skills (`rust-nif`, `rust-wasm`) have been removed so installs don't suggest skills the user doesn't have.
 - `hooks/bb-post-generator-patterns.d/rust.json` — checks for `cargo new` / `cargo init` output
