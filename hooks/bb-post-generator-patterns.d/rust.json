@@ -1,0 +1,14 @@
+{
+  "_about": "Post-generator scan checks for Rust generators (cargo new, cargo init, cargo generate). Fire once after the command completes, against the new project tree.",
+  "checks": [
+    {
+      "id": "cargo-package-missing-edition-2024",
+      "file_glob": "**/Cargo.toml",
+      "regex": "^\\[package\\]",
+      "skip_if_in_file": "edition\\s*=\\s*\"202[1-9]\"",
+      "cite": "rust-planning §Workspace Layout",
+      "severity": "warn",
+      "message": "[package] in Cargo.toml without `edition = \"2024\"` (or 2021/2023). cargo-new defaults to the toolchain's pinned edition; pin it explicitly to avoid drift across machines / CI."
+    }
+  ]
+}

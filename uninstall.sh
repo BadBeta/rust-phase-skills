@@ -17,6 +17,7 @@ rm -f "${HOOKS_DIR}/bb-rationale-marker-rust.py"
 rm -f "${HOOKS_DIR}/bb-no-std-build-check.py"
 rm -f "${HOOKS_DIR}/bb-anti-slop-patterns.d/rust.json"
 rm -f "${HOOKS_DIR}/bb-skill-triggers.d/rust.json"
+rm -f "${HOOKS_DIR}/bb-post-generator-patterns.d/rust.json"
 
 for sk in rust-planning rust-implementing rust-reviewing; do
     rm -rf "${SKILLS_DIR}/${sk}"

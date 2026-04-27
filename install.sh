@@ -72,6 +72,7 @@ fi
 
 mkdir -p "${HOOKS_DIR}/bb-anti-slop-patterns.d"
 mkdir -p "${HOOKS_DIR}/bb-skill-triggers.d"
+mkdir -p "${HOOKS_DIR}/bb-post-generator-patterns.d"
 mkdir -p "${SKILLS_DIR}"
 
 # ── 3. Hook files (Rust-specific) ─────────────────────────────────────────
@@ -84,6 +85,8 @@ chmod +x "${HOOKS_DIR}/bb-rationale-marker-rust.py" "${HOOKS_DIR}/bb-no-std-buil
 echo "[2/4] copying drop-in fragments…"
 cp -p "${SCRIPT_DIR}/hooks/bb-anti-slop-patterns.d/rust.json" "${HOOKS_DIR}/bb-anti-slop-patterns.d/"
 cp -p "${SCRIPT_DIR}/hooks/bb-skill-triggers.d/rust.json" "${HOOKS_DIR}/bb-skill-triggers.d/"
+[ -f "${SCRIPT_DIR}/hooks/bb-post-generator-patterns.d/rust.json" ] && \
+  cp -p "${SCRIPT_DIR}/hooks/bb-post-generator-patterns.d/rust.json" "${HOOKS_DIR}/bb-post-generator-patterns.d/"
 
 # ── 5. Skills ─────────────────────────────────────────────────────────────
 echo "[3/4] copying rust skills…"
