@@ -1,0 +1,91 @@
+{
+  "keywords": {
+    ".rs ": [
+      "rust-implementing"
+    ],
+    "anti-pattern": [
+      "rust-reviewing"
+    ],
+    "architect": [
+      "rust-planning"
+    ],
+    "architecture": [
+      "rust-planning"
+    ],
+    "audit": [
+      "rust-reviewing"
+    ],
+    "bounded context": [
+      "rust-planning"
+    ],
+    "cargo": [
+      "rust-implementing"
+    ],
+    "code smell": [
+      "rust-reviewing"
+    ],
+    "critique": [
+      "rust-reviewing"
+    ],
+    "dirty scheduler": [
+      "rust-nif"
+    ],
+    "hexagonal": [
+      "rust-planning"
+    ],
+    "milestone": [
+      "rust-planning"
+    ],
+    "milestone-boundary": [
+      "rust-planning"
+    ],
+    "continue.md": [
+      "rust-planning"
+    ],
+    "PLAN.md": [
+      "rust-planning"
+    ],
+    "long-running": [
+      "rust-planning"
+    ],
+    "nif": [
+      "rust-nif",
+      "rust-implementing"
+    ],
+    "plan ": [
+      "rust-planning"
+    ],
+    "planning": [
+      "rust-planning"
+    ],
+    "refactor": [
+      "rust-reviewing",
+      "rust-implementing"
+    ],
+    "review": [
+      "rust-reviewing"
+    ],
+    "rust": [
+      "rust-implementing"
+    ],
+    "rust wasm": [
+      "rust-wasm",
+      "rust-implementing"
+    ],
+    "rustler": [
+      "rust-nif",
+      "rust-implementing"
+    ],
+    "tauri": [
+      "rust-implementing"
+    ],
+    "wasm": [
+      "rust-wasm",
+      "rust-implementing"
+    ],
+    "webassembly": [
+      "rust-wasm",
+      "rust-implementing"
+    ]
+  }
+}

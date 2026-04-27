@@ -1,0 +1,22 @@
+{
+  "_about": "Hook entries owned by rust-phase-skills. Installed on top of BB-skill-core. The two rationale-marker / no-std-build-check hooks are Rust-specific.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/bb-rationale-marker-rust.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 $HOME/.claude/hooks/bb-no-std-build-check.py",
+            "timeout": 35
+          }
+        ]
+      }
+    ]
+  }
+}

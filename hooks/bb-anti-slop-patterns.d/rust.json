@@ -1,0 +1,108 @@
+{
+  "rust": {
+    "extensions": [
+      ".rs"
+    ],
+    "checks": [
+      {
+        "id": "silent-unwrap-fallback",
+        "cite": "rust-reviewing \u00a77b #14",
+        "severity": "block",
+        "regex": "unwrap_or_else\\s*\\(\\s*\\|_\\|",
+        "message": "`unwrap_or_else(|_| ...)` ignores the error and substitutes a default. If the error path is provably unreachable use `.expect(\"invariant X because ...\")` so a future regression panics loudly with context. If it IS reachable, handle it properly \u2014 don't silently swap in a default."
+      },
+      {
+        "id": "safety-comment-without-unsafe",
+        "cite": "rust-reviewing \u00a77b #16",
+        "severity": "block",
+        "regex": "//\\s*SAFETY:",
+        "requires_missing_in_file": "unsafe",
+        "message": "`// SAFETY:` comment but the file contains no `unsafe` block. SAFETY markers are reserved for justifying `unsafe { ... }` / `unsafe fn`. On safe code they are misleading noise \u2014 reviewers must re-verify there's no hidden unsafe, and future readers assume the author meant something. Delete the marker or move it next to the real unsafe site."
+      },
+      {
+        "id": "unwrap-in-production",
+        "cite": "rust-reviewing \u00a77.5 / \u00a77b #3",
+        "severity": "warn",
+        "regex": "\\.unwrap\\(\\)",
+        "skip_if_in_file": "#\\[cfg\\(test\\)\\]|#!\\[cfg\\(test\\)\\]|#!\\[cfg_attr\\(test|#!\\[allow\\(clippy::unwrap_used",
+        "skip_if_path_matches": "(^|/)tests/|_test\\.rs$|(^|/)benches/|(^|/)examples/",
+        "message": "`.unwrap()` in production code panics on error. In tests this is idiomatic; in lib/ or main code, prefer `?`, `.expect(\"invariant\")`, or a typed error. (Note: this check fires conservatively \u2014 skipped for files with a test-scoped allow or under tests/ / benches/ / examples/.)"
+      },
+      {
+        "id": "silent-let-underscore-fallible",
+        "cite": "rust-reviewing \u00a77b #14 (silent-fallback variant)",
+        "severity": "warn",
+        "regex": "let\\s+_\\s*=\\s*(?:std::io::stdout|std::io::stderr|[a-zA-Z_][a-zA-Z0-9_]*\\.(?:flush|write_all|shutdown|sync_all|close))",
+        "message": "`let _ = <fallible io op>` silently discards the error. If the error path is provably unreachable, `.expect(\"invariant\")` records WHY. If it IS reachable, handle it. The bug class: an edge-case error becomes silent garbage instead of a loud diagnostic."
+      },
+      {
+        "id": "duration-magic-outside-policy",
+        "cite": "rust-reviewing \u00a71 rule 16 + \u00a77.1 SSOT litmus",
+        "severity": "warn",
+        "regex": "Duration::from_(?:secs|millis|micros|nanos)\\s*\\(\\s*(?!0\\s*\\))",
+        "skip_if_in_file": "#\\[cfg\\(test\\)\\]|#!\\[cfg\\(test\\)\\]|#!\\[cfg_attr\\(test",
+        "skip_if_path_matches": "policy\\.rs|config\\.rs|constants\\.rs|consts\\.rs|settings\\.rs|(^|/)tests/|_test\\.rs$|(^|/)benches/",
+        "message": "`Duration::from_*(N)` literal outside a policy/config file. If this value encodes a deliberate timeout/interval, it belongs in `policy.rs` / `config.rs` / `constants.rs` as a named `const` so the SSOT litmus holds (`grep '<NAME>'` finds every caller). Literals in business logic drift. Integration-test fixtures under `tests/` / `benches/` are exempt \u2014 their durations are empirical orchestration values, not policy."
+      },
+      {
+        "id": "spawn-reply-tuple-result",
+        "cite": "rust-reviewing (Rusty_BEAM_node M20-M24 review, finding 12): SPAWN_REPLY Result must be a bare atom",
+        "severity": "warn",
+        "regex": "build_spawn_reply\\s*\\([\\s\\S]{0,300}?Term::Tuple\\s*\\(\\s*vec!\\s*\\[\\s*Term::atom\\s*\\(\\s*\"(?:error|ok)\"",
+        "message": "`build_spawn_reply(... Term::Tuple(vec![Term::atom(\"error\"|\"ok\"), ...]))` \u2014 SPAWN_REPLY's Result field must be a bare reason atom on failure (e.g. `Term::atom(\"undef\")`) or a `Term::Pid(...)` on success. OTP validates the tuple shape strictly and treats `{error, Reason}` tuples as \"Invalid distribution message\" \u2014 it drops the connection. Use the bare atom; the caller's distribution layer wraps it into `{spawn_reply, Ref, error, Reason}` locally."
+      },
+      {
+        "id": "spawn-task-without-panic-catch",
+        "cite": "rust-reviewing (Rusty_BEAM_node M20-M24 review, finding 2): tokio::spawn + user closure + post-cleanup without panic guard",
+        "severity": "warn",
+        "regex": "tokio::spawn\\s*\\(\\s*async\\s+move\\s*\\{[\\s\\S]{0,800}?\\b(?:handler|callback|user_fn|registered)\\s*\\(",
+        "requires_missing_in_file": "spawn_blocking|catch_unwind|AssertUnwindSafe",
+        "message": "`tokio::spawn(async move { ... handler(args) ...; cleanup; })` runs user-provided closure code inline and does cleanup after. A panic inside `handler(args)` unwinds the whole task \u2014 cleanup never fires, resources leak, remote callers waiting on a completion signal hang. Route the user closure through `tokio::task::spawn_blocking(move || handler(args)).await` so a panic becomes `JoinError::is_panic()` that the cleanup code can observe, then still run cleanup. Also benefits sync handlers (doesn't stall the async runtime). Checked at file scope \u2014 silenced when the file already mentions spawn_blocking / catch_unwind / AssertUnwindSafe."
+      },
+      {
+        "id": "nif-vec-u8-return",
+        "cite": "rust-nif Rule 18 / \u00a72.3 #2",
+        "severity": "block",
+        "regex": "#\\[rustler::nif[^\\]]*\\][\\s\\S]{0,200}?\\bfn\\s+\\w+[\\s\\S]{0,300}?->\\s*[^{;]*?\\bVec<u8>",
+        "message": "NIF function returns `Vec<u8>` \u2014 Rustler encodes this as a *list of integers*, not a binary. Use `NewBinary::new(env, len)` + `as_mut_slice().copy_from_slice(&bytes)` and return `Binary<'a>`, OR `OwnedBinary::new(n).release(env)` for the older API. See rust-nif Rule 18 / \u00a72.3 #2."
+      },
+      {
+        "id": "nif-error-term-vs-raise",
+        "cite": "rust-nif \u00a72.8 \u2014 Error::Term encodes as {:error, _}; only Error::RaiseTerm/RaiseAtom raise",
+        "severity": "warn",
+        "regex": "rustler::Error::Term\\s*\\(\\s*Box::new\\s*\\(",
+        "requires_missing_in_file": "RaiseTerm|RaiseAtom",
+        "message": "`rustler::Error::Term(Box::new(_))` *encodes* as `{:error, encoded}` \u2014 it does NOT raise on the Elixir side. If you want a NIF returning `NifResult<T>` to raise on Err (the typical bang-style API), use `Error::RaiseTerm(Box::new(...))` or `Error::RaiseAtom(\"...\")`. If you want `{:error, _}` tuples on the Elixir side, change the function's return type to `Result<T, MyError>` (with `Encoder` for `MyError`) \u2014 `NifResult<T>` is for raises. The hook silences once the file also mentions RaiseTerm/RaiseAtom (assumes intentional mix)."
+      },
+      {
+        "id": "nif-module-elixir-prefix",
+        "cite": "rust-nif \u00a72.6 NifStruct \u2014 rustler auto-prepends Elixir.",
+        "severity": "warn",
+        "regex": "#\\[\\s*module\\s*=\\s*\"Elixir\\.",
+        "message": "`#[module = \"Elixir.X\"]` on a NifStruct produces `__struct__: Elixir.Elixir.X` \u2014 rustler auto-prepends `Elixir.`. Drop the prefix: `#[module = \"MyApp.X\"]`. Note the asymmetry that trips people up: `rustler::init!(\"Elixir.MyApp.Native\")` DOES need the prefix; the NifStruct attribute does NOT."
+      }
+    ]
+  },
+  "c": {
+    "extensions": [
+      ".c",
+      ".h"
+    ],
+    "checks": [
+      {
+        "id": "gets-banned",
+        "cite": "c-programming / CERT FIO39",
+        "severity": "block",
+        "regex": "\\bgets\\s*\\(",
+        "message": "`gets()` was removed in C11 because there is no way to use it safely. Use `fgets()` with an explicit buffer size, or POSIX `getline()`."
+      },
+      {
+        "id": "strcpy-unchecked",
+        "cite": "c-programming / MISRA",
+        "severity": "warn",
+        "regex": "\\bstrcpy\\s*\\(",
+        "message": "`strcpy()` has no bounds checking. Prefer `strncpy` with explicit size (and manual null-termination), `strlcpy` where available, or `snprintf`."
+      }
+    ]
+  }
+}
