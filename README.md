@@ -75,3 +75,5 @@ The installs are namespaced 'bb' and purely additive, and should not affect any 
 - `hooks/bb-post-generator-patterns.d/rust.json` — checks for `cargo new` / `cargo init` output
 
 Claude has summarized a more detailed user guide which should be up to datish.
+
+→ Full architecture and how-to-extend reference: [User_Guide.md in BB-skill-core](https://github.com/BadBeta/BB-skill-core/blob/main/User_Guide.md).
