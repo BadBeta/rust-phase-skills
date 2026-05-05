@@ -1035,6 +1035,40 @@ let config = load_config()
 let name: String = get_name().unwrap_or_default();
 ```
 
+### Sequential fallback (chain of `or_else`)
+
+When loading something from N sources in priority order — config files
+in standard locations, secrets from multiple stores, certificates from
+ordered paths — chain `or_else`:
+
+```rust
+fn load_config() -> Result<Config, ConfigError> {
+    Config::load_from_file("./app.conf")
+        .or_else(|_| Config::load_from_file("/etc/app/app.conf"))
+        .or_else(|_| Config::load_from_file("/usr/local/etc/app.conf"))
+        .or_else(|_| {
+            tracing::warn!("Using default config");
+            Ok(Config::default())
+        })
+}
+```
+
+Each closure runs only if the previous attempt failed. The final
+fallback ensures a valid value or a definite final error. Cleaner than
+nested `match` chains; preserves the cause-chain on the last error
+because `or_else` discards the *successful* path's error context but
+keeps the most recent error if the chain fails entirely.
+
+For multi-provider config layering specifically (env vars + TOML + JSON
++ command-line, with merge/override semantics), prefer the
+[`figment`](https://github.com/SergioBenitez/Figment) crate — used in
+production by Rocket and many web services. It generalizes the
+sequential fallback to merge/join strategies across providers, with
+four conflict-resolution policies (`join`, `adjoin`, `merge`,
+`admerge`). The hand-rolled `or_else` chain above is fine for "first
+file that exists wins"; `figment` is the right choice when sources are
+*combined*, not *substituted*.
+
 ### Retry Logic
 
 ```rust

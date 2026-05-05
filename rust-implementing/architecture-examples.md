@@ -2,6 +2,8 @@
 
 Complete code examples for architecture patterns. For concepts, decision tables, and rules, see [architecture.md](architecture.md).
 
+> **GoF pattern translations** — for "I know this pattern from another language; what's the Rust shape?" — see [rust-planning/gof-translation.md](../rust-planning/gof-translation.md). This file covers complete worked examples; that one is a per-pattern lookup table.
+
 ## DI Containers
 
 For most projects, **manual DI via constructor injection is sufficient**. Use DI containers when you have 20+ services with complex dependency graphs.

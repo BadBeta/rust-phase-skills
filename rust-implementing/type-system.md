@@ -643,6 +643,122 @@ impl TryFrom<&str> for Port {
 }
 ```
 
+#### Validated newtypes + Builder — the canonical "Parse, Don't Validate" shape
+
+When a type has multiple validated fields, pair `TryFrom`/`new`-style
+validated newtypes with a Builder so all validation runs once at
+construction and the resulting struct is valid by construction.
+
+```rust
+use std::num::NonZeroUsize;
+
+// Step 1: validated newtypes for each constrained primitive.
+//   Use std::num::NonZero* when applicable; otherwise wrap.
+
+#[derive(Debug, Clone, Copy)]
+pub struct PositiveU32(u32);
+impl PositiveU32 {
+    pub fn new(v: u32) -> Result<Self, ConfigError> {
+        if v > 0 { Ok(Self(v)) } else { Err(ConfigError::MustBePositive) }
+    }
+    pub fn get(self) -> u32 { self.0 }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NetworkPort(u16);
+impl NetworkPort {
+    pub fn new(p: u16) -> Result<Self, ConfigError> {
+        if p > 1023 { Ok(Self(p)) } else { Err(ConfigError::PortReserved(p)) }
+    }
+    pub fn get(self) -> u16 { self.0 }
+}
+
+// Step 2: the final struct holds the validated newtypes.
+//   Fields are private — there's no way to construct an invalid value.
+
+#[derive(Debug, Clone)]
+pub struct BrokerConfig {
+    max_connections: PositiveU32,
+    buffer_size: NonZeroUsize,
+    port: NetworkPort,
+}
+
+impl BrokerConfig {
+    pub fn builder() -> BrokerConfigBuilder { BrokerConfigBuilder::new() }
+    pub fn max_connections(&self) -> u32 { self.max_connections.get() }
+    pub fn buffer_size(&self) -> usize  { self.buffer_size.get() }
+    pub fn port(&self) -> u16            { self.port.get() }
+}
+
+// Step 3: Builder accepts raw primitives, validates per setter,
+//   final build() ensures all required fields present.
+
+pub struct BrokerConfigBuilder {
+    max_connections: Option<PositiveU32>,
+    buffer_size:     Option<NonZeroUsize>,
+    port:            Option<NetworkPort>,
+}
+
+impl BrokerConfigBuilder {
+    fn new() -> Self {
+        Self { max_connections: None, buffer_size: None, port: None }
+    }
+    pub fn max_connections(mut self, v: u32) -> Result<Self, ConfigError> {
+        self.max_connections = Some(PositiveU32::new(v)?);
+        Ok(self)
+    }
+    pub fn buffer_size(mut self, v: usize) -> Result<Self, ConfigError> {
+        self.buffer_size = Some(
+            NonZeroUsize::new(v).ok_or(ConfigError::MustBePositive)?,
+        );
+        Ok(self)
+    }
+    pub fn port(mut self, v: u16) -> Result<Self, ConfigError> {
+        self.port = Some(NetworkPort::new(v)?);
+        Ok(self)
+    }
+    pub fn build(self) -> Result<BrokerConfig, ConfigError> {
+        Ok(BrokerConfig {
+            max_connections: self.max_connections.ok_or(ConfigError::MissingMaxConnections)?,
+            buffer_size:     self.buffer_size.ok_or(ConfigError::MissingBufferSize)?,
+            port:            self.port.ok_or(ConfigError::MissingPort)?,
+        })
+    }
+}
+
+// Usage — fluent, errors short-circuit, result is valid by construction:
+let cfg = BrokerConfig::builder()
+    .max_connections(1000)?
+    .buffer_size(4096)?
+    .port(8080)?
+    .build()?;
+```
+
+After this shape, business logic never needs defensive re-checks. A
+function taking `BrokerConfig` is guaranteed to receive only valid
+values; a function taking `PositiveU32` cannot accidentally receive zero.
+
+**Production references for this shape:**
+
+- [`dtolnay/semver`](https://github.com/dtolnay/semver/blob/master/src/parse.rs) —
+  `Version::parse` returns `Result<Version, Error>`. After parsing,
+  fields are guaranteed valid. There is no `validate()` method anywhere
+  in the crate.
+- [Rust API Guidelines C-NEWTYPE](https://rust-lang.github.io/api-guidelines/type-safety.html) —
+  *"Newtypes can statically distinguish between different
+  interpretations of an underlying type."*
+- [Rust API Guidelines C-BUILDER](https://rust-lang.github.io/api-guidelines/type-safety.html) —
+  *"Introduce a separate data type `TBuilder` for incrementally
+  configuring a `T` value. The builder pattern suits complex
+  construction scenarios involving numerous inputs, optional
+  configuration, or side effects."*
+- The hub-skill SKILL.md §"Parse, Don't Validate" frames the
+  thinking-mindset version of this pattern.
+
+**Anti-pattern signal**: same validation check (`if x > 0 { ... }`,
+`if !s.is_empty()`) appearing at multiple call sites. Lift it into a
+constructor on a newtype.
+
 ### AsRef and AsMut
 
 ```rust
@@ -759,6 +875,57 @@ This pattern is useful when you need to:
 ## Type State Pattern
 
 Encode state machines in the type system so invalid transitions are compile-time errors.
+
+### The single most important TypeState rule
+
+> Every transition method takes `self` (not `&self` or `&mut self`) and
+> returns `Self<NextState>` or `Result<Self<NextState>, (Error, Self<S>)>`.
+
+Ownership transfer makes the previous state *unreachable* after the
+transition; the compiler enforces this. A method that takes `&mut self` and
+mutates a runtime `state: State` field is NOT typestate — it's a runtime
+state machine wearing typestate clothing, which loses every compile-time
+guarantee the pattern is supposed to provide.
+
+```rust
+// GOOD — transition consumes self, returns new type
+impl Consumer<Disconnected> {
+    pub fn connect(self, info: ConnectionInfo)
+        -> Result<Consumer<Connected>, SamsaError>
+    {
+        // ... the old consumer is *moved* into this call; unreachable afterward.
+        Ok(Consumer { /* state: PhantomData<Connected> */ })
+    }
+}
+
+// BAD — looks like TypeState but isn't
+impl Consumer {
+    pub fn connect(&mut self, info: ConnectionInfo) -> Result<(), SamsaError> {
+        self.state = State::Connected;  // runtime, no compile-time enforcement
+        Ok(())
+    }
+}
+```
+
+For error returns where the caller needs to retry, return the consumed
+state in the error variant: `Result<Self<NextState>, (Error, Self<S>)>`.
+See [rust-unofficial/patterns *Return consumed arg on error*](https://rust-unofficial.github.io/patterns/idioms/return-consumed-arg-on-error.html)
+for the broader idiom.
+
+**Production exemplars:**
+
+- [`idanarye/rust-typed-builder`](https://github.com/idanarye/rust-typed-builder)
+  (~6M downloads) — doc: *"all builder methods are call-by-move and the
+  builder is not cloneable."* Missing required fields = compile error
+  (`Foo::builder().build();` fails to compile, not at runtime).
+- [`elastio/bon`](https://github.com/elastio/bon) (~3M downloads, modern
+  alternative) — same shape; widely adopted in newer SDKs since 2024.
+- The embedded-HAL ecosystem (atsamd-hal, stm32f4xx-hal, esp-hal,
+  embassy-stm32/-rp/-nrf): GPIO pin mode transitions are typestate.
+  `pin.into_push_pull_output()` consumes `Pin<I, FloatingInput>` and
+  returns `Pin<I, PushPullOutput>`. `pin.set_high()` doesn't even *exist*
+  for `Pin<I, FloatingInput>` — calling it is a "method not found"
+  compile error, not a runtime panic.
 
 ### Basic Type State
 
@@ -1001,6 +1168,78 @@ impl Session<Authenticated> {
 | Compile-time guarantees matter | Simplicity matters more than safety |
 
 **Limitation:** Type state objects can't be stored in a `Vec<Session<_>>` because each state is a different type. Use an enum wrapper if you need heterogeneous collections.
+
+### State transitions returned as data (the runtime alternative)
+
+Use this when TypeState (compile-time, above) is too rigid — modes must
+be picked at runtime, the transition graph isn't fully known up front,
+or the State pattern's runtime polymorphism is required.
+
+**The problem this solves**: a "state" object can't directly mutate the
+holder that owns it, because that would require borrowing the holder
+both immutably (via the `state` field) and mutably (to swap the state).
+The fix: the state's method *returns* the transition as data; the
+holder applies it.
+
+```rust
+pub enum InputResult {
+    Value(f64),
+    ChangeMode(Box<dyn CalculatorState>),  // <-- transition is data
+    NoOutput,
+    Error(String),
+}
+
+pub trait CalculatorState: Send {
+    // &self, NOT &mut self. State is immutable; transitions are returned.
+    fn handle_input(&self, input: &str, data: &mut CalculatorData) -> InputResult;
+}
+
+pub struct Calculator {
+    state: Box<dyn CalculatorState>,
+    data: CalculatorData,
+}
+
+impl Calculator {
+    pub fn process_input(&mut self, input: &str) -> Result<Option<f64>, String> {
+        match self.state.handle_input(input, &mut self.data) {
+            InputResult::Value(v) => Ok(Some(v)),
+            InputResult::NoOutput => Ok(None),
+            InputResult::ChangeMode(new) => { self.state = new; Ok(None) }
+            InputResult::Error(e) => Err(e),
+        }
+    }
+}
+```
+
+The data the states operate on goes in a separate `CalculatorData`
+struct so the borrow checker allows it: `state` field borrowed
+immutably, `data` field borrowed mutably — Rust permits this when
+fields are accessed individually, not through methods that take `&mut
+self` on the enclosing struct.
+
+**Production exemplars:**
+
+- Actor-style frameworks ([`actix`](https://actix.rs/),
+  [`xtra`](https://github.com/Restioson/xtra),
+  [`ractor`](https://github.com/slawlor/ractor)): every transition is a
+  message in an `enum`; the actor owns mutable state and applies the
+  transition serially in its message-handling loop. The message
+  *describes* the change.
+- [`tokio::sync::watch::Sender::send_replace(new)`](https://docs.rs/tokio/latest/tokio/sync/watch/struct.Sender.html#method.send_replace) returns the
+  pre-swap value — the transition flows back as data.
+- [`embassy_executor`](https://docs.embassy.dev/embassy-executor/) +
+  [`embassy_sync::channel::Channel`](https://docs.embassy.dev/embassy-sync/git/default/channel/struct.Channel.html):
+  tasks own state; commands arrive as enum messages over a `Channel`.
+
+**Decision: TypeState vs state-as-data**
+
+| When | Use |
+|---|---|
+| Transition graph fully known at compile time | TypeState (above) |
+| All transitions must be infallible compile errors | TypeState |
+| Mode picked at runtime (user input, config) | State-as-data |
+| Heterogeneous states must live in one `Vec` | State-as-data |
+| Both — start with TypeState, fall back when runtime variation needed | Both, layered |
 
 ## Generic Associated Types (GATs)
 

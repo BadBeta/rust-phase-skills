@@ -696,6 +696,14 @@ fn parse_token(input: &str) -> Cow<str> {
 
 ### Zero-Copy Patterns
 
+> **Planning-side decision**: the choice of *which* call sites get owned
+> data vs borrowed views vs cheap-clone wrappers (`Bytes`, `Arc<T>`, `Cow`)
+> is an API-design call made before code is written. See
+> [rust-planning/architecture-patterns.md §"Plan zero-copy view types at
+> API design"](../rust-planning/architecture-patterns.md) for the
+> decision table and the `bytes::Bytes` exemplar. The patterns below
+> cover the implementation mechanics once the choice is made.
+
 ```rust
 // Take &[u8] or &str instead of Vec<u8> or String
 fn process_bytes(data: &[u8]) -> Result<(), Error> {
@@ -729,6 +737,136 @@ fn intern<'a>(pool: &'a HashSet<String>, s: &str) -> &'a str {
     }
 }
 ```
+
+### Indices instead of pointers / references
+
+Storing `*const T`, `*mut T`, or `&T` into a struct that also owns the
+`Vec<T>` they point into is a use-after-free waiting to happen. Any
+`.push()` that triggers reallocation invalidates every pointer.
+
+The Rust standard library's `Vec` documentation states this explicitly:
+
+> *"Modifying the vector may cause its buffer to be reallocated, which
+> would also make any pointers to it invalid."* — [`std::vec::Vec`](https://doc.rust-lang.org/std/vec/struct.Vec.html)
+
+Miri (`cargo +nightly miri test`) is the canonical detector — Miri's
+docs list "use-after-free" among the undefined behavior it catches,
+including Vec reallocation invalidating pointers.
+
+```rust
+// BAD — pointer-into-Vec, dangles after reallocation
+struct UndoHistory {
+    states: Vec<State>,
+    current: Option<*const State>,   // dangles after states.push() reallocates
+}
+
+// GOOD — usize index, never invalidated by Vec reallocation
+struct UndoHistory {
+    states: Vec<State>,
+    position: usize,
+}
+
+impl UndoHistory {
+    pub fn current(&self) -> Option<&State> {
+        self.position.checked_sub(1).and_then(|i| self.states.get(i))
+    }
+    pub fn push(&mut self, state: State) {
+        self.states.truncate(self.position);   // discard "future" states
+        self.states.push(state);
+        self.position = self.states.len();
+    }
+}
+```
+
+Bonus: indices encode "discard future on new push after undo" naturally
+via `truncate`. Pointer-based versions need extra bookkeeping for that.
+
+**Production exemplars:**
+
+- [`orlp/slotmap`](https://github.com/orlp/slotmap) — *"This library
+  provides a container with persistent unique keys to access stored
+  values, [`SlotMap`]. Great for storing collections of objects that
+  need stable, safe references but have no clear ownership otherwise,
+  such as game entities or graph nodes."* Insert returns a `Key`; the
+  `Key` stays valid even after underlying storage reallocates, and is
+  detected as invalid (returns `None`) after `remove`.
+- [`petgraph`](https://github.com/petgraph/petgraph) — `Graph<N, E, Ty,
+  Ix>` parameterizes the index width (`Ix = u32` default, or `usize`).
+  `NodeIndex<Ix>` / `EdgeIndex<Ix>` are typed indices, not pointers.
+  Used by `daggy`, `RustAudio/dsp-chain`, and many ECS frameworks.
+- [`fitzgen/generational-arena`](https://github.com/fitzgen/generational-arena) —
+  `Index { index: usize, generation: u64 }`: same idea, with
+  generational checking that guards against ABA after `remove + insert`.
+- `rustc` itself: `HirId`, `DefId`, `LocalDefId`, `BodyId` are all
+  newtyped indices. The compiler never holds raw pointers into HIR/MIR.
+
+Apply this whenever you'd otherwise need a self-referential pointer
+field: graph nodes, expression trees with parent links, undo-history
+positions, caches keyed on identity.
+
+### Phase separation (escape `&self` / `&mut self` collisions)
+
+When a single method needs both `&self` and `&mut self` access to the
+same struct (e.g., reading from `self.history` while writing to
+`self.results`), the fix is almost never `RefCell` — it's splitting the
+work into phases that run in sequence, each with consistent borrow shape.
+
+```rust
+// BAD — &self / &mut self collision pushes you toward RefCell
+fn evaluate(&mut self, expr: &str) -> Result<f64, String> {
+    let tokens = self.tokenize(expr)?;
+    for token in &tokens {
+        if let Token::ResultRef(i) = token {
+            let prev = self.get_previous_result(*i)?;  // &self
+            // ... but we also want self.memory.push() — &mut self conflict
+        }
+    }
+    todo!()
+}
+
+// GOOD — separate the &self phase (resolve) from the &mut self phase (commit)
+fn evaluate(&mut self, expr: &str) -> Result<f64, String> {
+    let tokens = self.tokenize(expr)?;                    // &self
+    let resolved: Vec<Token> = tokens.into_iter().map(|t| match t {
+        Token::ResultRef(i) =>
+            Ok::<_, String>(Token::Number(self.get_previous_result(i)?)),
+        other => Ok(other),
+    }).collect::<Result<_, _>>()?;                         // &self
+    let result = self.evaluate_tokens(resolved)?;          // &self
+    self.memory.push(result);                              // &mut self
+    self.current_value = result;                           // &mut self
+    Ok(result)
+}
+```
+
+The pattern: tokenize → resolve references → evaluate → store. Each
+phase finishes before the next starts; `&self` and `&mut self` never
+collide. This is the canonical refactor when the borrow checker flags
+*"cannot borrow as immutable because it is also borrowed as mutable"*.
+
+**Production exemplar — `rust-analyzer`:**
+
+The IDE backend organizes its lowering passes into separate crates
+exactly to enforce this at scale:
+
+```
+crates/
+├── hir-expand/   # phase 1: macro expansion
+├── hir-def/      # phase 2: HIR definition + name resolution
+├── hir-ty/       # phase 3: type inference
+├── ide-db/       # phase 4: IDE-side queries on the above
+└── ide/          # phase 5: feature implementation
+```
+
+[`crates/hir-def/src/lib.rs`](https://github.com/rust-lang/rust-analyzer/blob/master/crates/hir-def/src/lib.rs)
+literally documents this in its doc comment: *"`hir_def` crate contains
+everything between macro expansion and type inference."* Each phase is
+a separate crate so dependencies flow strictly downward.
+
+The same pattern appears in the rustc compiler (lex → parse → AST →
+HIR → typeck → MIR → codegen). Apply at the function level for small
+cases, the module level for medium cases, and the crate level for
+compiler-scale work.
 
 ### Entry Pattern for Complex Map Updates
 
@@ -877,6 +1015,57 @@ let total = items.iter().try_fold(0u64, |acc, item| -> Result<u64, Error> {
 })?;
 ```
 
+### Pipeline of fallible stages
+
+When a value flows through N transformations, each of which can fail
+independently, model each stage as a closure of type
+`Fn(T) -> Result<T, E>` and run them with `try_fold`. The first error
+short-circuits; otherwise the value emerges at the end.
+
+```rust
+type Stage<T, E> = Box<dyn Fn(T) -> Result<T, E> + Send + Sync>;
+
+pub struct Pipeline<T, E> { stages: Vec<Stage<T, E>> }
+
+impl<T: Send + 'static, E: 'static> Pipeline<T, E> {
+    pub fn new() -> Self { Self { stages: Vec::new() } }
+    pub fn add_stage<F>(mut self, f: F) -> Self
+    where F: Fn(T) -> Result<T, E> + Send + Sync + 'static
+    {
+        self.stages.push(Box::new(f));
+        self
+    }
+    pub fn execute(&self, input: T) -> Result<T, E> {
+        self.stages.iter().try_fold(input, |acc, stage| stage(acc))
+    }
+}
+```
+
+`try_fold` is the right combinator: it threads the value, stops on the
+first `Err`, returns one `Result`. Hand-rolling this with a `for` loop
+and intermediate state is more code and easier to get wrong (forgetting
+to short-circuit, double-applying a stage on retry, etc.).
+
+**Production exemplar — [`tower`](https://github.com/tower-rs/tower)**
+(used by axum / tonic / hyper / AWS SDK). Tower's `ServiceBuilder`
+composes Layer→Layer→Service with each layer being a fallible
+transformation (timeout, concurrency-limit, retry, auth). Layers added
+first run first; errors short-circuit. Same shape as the `try_fold`
+pipeline but compiled via trait composition rather than runtime closure
+dispatch:
+
+```rust
+ServiceBuilder::new()
+    .buffer(100)
+    .concurrency_limit(10)
+    .timeout(Duration::from_secs(5))
+    .service(my_service)
+```
+
+For ad-hoc pipelines outside Tower's typed-layer model, use the
+closure-based shape above. Both are widely-used variants of the same
+underlying pattern.
+
 ## Iterator Composition (Extended)
 
 ### Adaptor Chaining Patterns
@@ -917,6 +1106,67 @@ let groups: Vec<Vec<_>> = items.iter()
         groups
     });
 ```
+
+### Domain-named iterator combinators (extension trait pattern)
+
+When the same `filter().map().fold()` chain appears 3+ times across the
+codebase, extract it as a domain-named extension trait method. The
+chain reads as a small DSL and code reviews speed up because the
+intent is named.
+
+**Production exemplar — [`itertools`](https://github.com/rust-itertools/itertools)** (~250M downloads).
+The crate IS this pattern at industrial scale: defines `pub trait
+Itertools: Iterator` with ~70 added methods (`interleave`, `chunks`,
+`dedup_by_key`, `cartesian_product`, etc.) and a blanket
+`impl<T: Iterator> Itertools for T {}`. Consumers write `use
+itertools::Itertools;` and the methods become available on every
+iterator.
+
+```rust
+// rust-itertools/itertools : src/lib.rs (abbreviated)
+pub trait Itertools: Iterator {
+    fn interleave<J>(self, other: J) -> Interleave<Self, J::IntoIter>
+    where J: IntoIterator<Item = Self::Item>, Self: Sized
+    { /* ... */ }
+    /* ...~70 more methods */
+}
+
+impl<T> Itertools for T where T: ?Sized + Iterator {}
+```
+
+Apply the same shape for project-specific domain combinators:
+
+```rust
+trait SubscriptionProcessing: Iterator<Item = SubscriptionEvent> + Sized {
+    fn valid_subscriptions(self) -> impl Iterator<Item = SubscriptionEvent> {
+        self.filter(|e| e.is_valid()).filter(|e| e.is_subscription())
+    }
+    fn count_by_topic(self) -> HashMap<String, usize> {
+        self.fold(HashMap::new(), |mut acc, e| {
+            *acc.entry(e.topic).or_insert(0) += 1; acc
+        })
+    }
+}
+
+impl<I: Iterator<Item = SubscriptionEvent>> SubscriptionProcessing for I {}
+
+// Usage reads as the business rule, not as an inscrutable closure chain:
+events.into_iter()
+    .recent_events(cutoff)
+    .valid_subscriptions()
+    .count_by_topic();
+```
+
+Same pattern in `futures::StreamExt` / `futures::TryStreamExt`
+(`then`, `filter_map`, `try_fold`, `try_for_each` extensions on
+streams) and the standard library's own `Iterator::sum`/`product`/etc.
+default methods.
+
+**Trade-off**: each combinator that returns a boxed iterator
+(`Box<dyn Iterator>`) costs an allocation. Prefer raw `filter()` /
+`map()` for hot paths where the iterator type is monomorphized inline;
+extension traits shine in non-hot business-logic flows where
+readability dominates.
 
 ### Building Custom Iterators
 
@@ -1473,6 +1723,63 @@ fn deploy() -> Result<(), Error> {
 }
 ```
 
+### Transaction-style guard (rollback on drop, commit explicit)
+
+When a guard wraps a resource that needs *either* commit *or* rollback
+(DB transactions, two-phase locks, distributed acquire/release), use a
+completion flag. `Drop` rolls back if the caller didn't commit; the
+caller cannot forget cleanup because `Drop` runs even on panic.
+
+**Production exemplar — `sqlx::Transaction`** ([`launchbadge/sqlx`](https://github.com/launchbadge/sqlx/blob/main/sqlx-core/src/transaction.rs)).
+The doc comment captures the contract: *"A transaction should end with
+a call to `commit` or `rollback`. If neither are called before the
+transaction goes out-of-scope, `rollback` is called."*
+
+```rust
+// launchbadge/sqlx : sqlx-core/src/transaction.rs (abbreviated)
+pub struct Transaction<'c, DB: Database> {
+    connection: MaybePoolConnection<'c, DB>,
+    open: bool,                       // <-- the completion flag
+}
+
+impl<'c, DB: Database> Transaction<'c, DB> {
+    pub async fn commit(mut self) -> Result<(), Error> {
+        DB::TransactionManager::commit(&mut self.connection).await?;
+        self.open = false;
+        Ok(())
+    }
+    pub async fn rollback(mut self) -> Result<(), Error> {
+        DB::TransactionManager::rollback(&mut self.connection).await?;
+        self.open = false;
+        Ok(())
+    }
+}
+
+impl<'c, DB: Database> Drop for Transaction<'c, DB> {
+    fn drop(&mut self) {
+        if self.open {
+            DB::TransactionManager::start_rollback(&mut self.connection);
+        }
+    }
+}
+```
+
+Properties:
+- `commit()` / `rollback()` consume `self` — guard unreachable afterward.
+- Borrow of `connection` is exclusive for the guard's lifetime — no other
+  code can touch it during the transaction.
+- `Drop` runs even on panic, so cleanup is guaranteed.
+
+The same shape applies to:
+- File-system staging (write to `.tmp`, rename on commit, unlink on drop).
+- Distributed lock acquire (`lock_id` field, release on drop, mark
+  `released = true` on explicit release to skip drop work).
+- `scopeguard::ScopeGuard::into_inner()` to "defuse" cleanup explicitly.
+
+Reference: [rust-unofficial/patterns *RAII Guards*](https://rust-unofficial.github.io/patterns/patterns/behavioural/RAII.html) —
+*"Resource Acquisition is Initialisation … leveraging the type system
+to prevent misuse."*
+
 ### ManuallyDrop and mem::forget
 
 ```rust
@@ -1522,6 +1829,12 @@ pub use internal::compute;  // Re-export makes it truly public
 ```
 
 ### Module Layout Patterns
+
+> **Curated public-API design**: for the *crate-level facade* pattern (`pub
+> use` in `lib.rs`, dedicated `prelude.rs`, when to pick which shape), see
+> [rust-planning/architecture-patterns.md §"Modules Become Interfaces"](../rust-planning/architecture-patterns.md).
+> The patterns below cover the file-layout mechanics; the planning skill
+> covers the *what to expose* decision.
 
 ```rust
 // Pattern 1: File per module

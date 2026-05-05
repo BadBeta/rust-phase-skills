@@ -87,6 +87,11 @@ These rules capture the most critical architectural decisions. When generating o
 
 ## Architectural Patterns & Principles
 
+> **Coming from another language?** For the GoF design patterns
+> (Factory, Builder, Strategy, Visitor, etc.) and how each translates
+> into idiomatic Rust — including the five patterns that are absent
+> because language features replace them — see [gof-translation.md](gof-translation.md).
+
 ### SOLID Principles in Rust
 
 SOLID maps naturally to Rust — the type system and trait system enforce several principles at compile time.
@@ -346,6 +351,59 @@ my-app/
 ```
 
 **The litmus test:** Can you delete the `infrastructure/` and `server/` crates and still compile `domain/` and `application/`? If yes, your architecture is clean.
+
+### Compose Structs for Independent Borrowing
+
+A struct is a single borrow unit: `&mut self.field_a` and `&mut self.field_b`
+in the same expression force `&mut self` on the whole struct. When two
+logically-independent fields need concurrent mutation — or two helpers need
+to lock different state simultaneously — decompose into smaller owned
+components. Each independently-accessible field becomes its own
+`Arc<Mutex<…>>`, `Arc<RwLock<…>>`, or `Arc<Atomic*>`.
+
+This is "Compose Structs" in the community-canonical [Rust Design Patterns](https://rust-unofficial.github.io/patterns/patterns/structural/compose-structs.html)
+book. Key insight from there: *"Sometimes a large struct will cause issues
+with the borrow checker — although fields can be borrowed independently,
+sometimes the whole struct ends up being used at once, preventing other
+uses."* Decomposition produces a better design as a side effect.
+
+**Production exemplar — Apache Iggy** ([apache/iggy](https://github.com/apache/iggy),
+message broker). The `ProducerCore` struct in
+[`core/sdk/src/clients/producer.rs`](https://github.com/apache/iggy/blob/master/core/sdk/src/clients/producer.rs)
+has ~24 fields, *each individually wrapped*:
+
+```rust
+// apache/iggy : core/sdk/src/clients/producer.rs (abbreviated)
+pub struct ProducerCore {
+    initialized: AtomicBool,
+    can_send: Arc<AtomicBool>,
+    client: Arc<IggyRwLock<ClientWrapper>>,
+    stream_id: Arc<Identifier>,
+    topic_id: Arc<Identifier>,
+    partitioning: Option<Arc<Partitioning>>,
+    encryptor: Option<Arc<EncryptorKind>>,
+    partitioner: Option<Arc<dyn Partitioner>>,
+    last_sent_at: Arc<AtomicU64>,
+    /* ...further fields, each independently wrappable */
+}
+```
+
+No single `Mutex<Producer>` wraps the whole thing, so a helper that holds
+the storage lock cannot block a sibling helper that updates metrics.
+
+**Lock primitive choice for the wrapped field:**
+
+| Use | When |
+|---|---|
+| `std::sync::Mutex<T>` | Default. Any access (read or write) is exclusive. |
+| `parking_lot::Mutex<T>` | Existing dep; want unpoisoned locks; benchmarks show contention. Drop-in replacement. |
+| `std::sync::RwLock<T>` | Reads dominate writes by ≥10× (config, route tables, schema caches). |
+| `Atomic*` | Scalar-sized state. Lock-free but only for primitives. |
+| `dashmap::DashMap<K, V>` | Concurrent map — sharded internally. See §"Inter-Component Communication". |
+
+**When NOT to apply this:** if the fields really do need to be mutated
+together (an aggregate update that must be atomic), one lock at the
+boundary is correct. Splitting then would introduce TOCTOU bugs.
 
 ### Domain-Driven Design (DDD) in Rust
 
@@ -1497,6 +1555,32 @@ impl AppState {
 
 ## Production Patterns
 
+### Plan capacity policy for append-only stores
+
+When a store is append-only — event log, history buffer, in-memory queue,
+broadcast channel, audit trail — plan capacity policy at design time, not
+as a cleanup task later. Decide one of:
+
+- **Backpressure**: reject or throttle producers above capacity (`mpsc` bounded channel default behavior).
+- **Expiration**: TTL or count-based eviction (`moka::future::Cache`, Redis EXPIRE).
+- **Compaction**: keep only latest per key, or snapshot + truncate.
+- **Offload**: spill to disk, archive remotely, or retain externally.
+
+**Production examples:**
+
+- Tokio's broadcast channel ([`tokio::sync::broadcast::channel(capacity)`](https://docs.rs/tokio/latest/tokio/sync/broadcast/fn.channel.html))
+  REQUIRES specifying capacity at construction; slow consumers receive
+  `RecvError::Lagged` rather than silent OOM.
+- Apache Iggy ([`apache/iggy`](https://github.com/apache/iggy)) exposes
+  `MaxTopicSize`, `MessageExpiry`, and segment compaction as first-class
+  config in `IggyProducerBuilder` — built in, not bolted on.
+- sled ([`sled-rs/sled`](https://github.com/spacejam/sled)) documents the
+  LSM-tree backpressure / compaction trade-offs as decisions made at
+  storage-engine init.
+
+Changing this after launch is much harder than picking a policy upfront —
+in-flight clients have to handle a new error variant or a behavior change.
+
 ### Graceful Shutdown
 
 ```rust
@@ -2531,6 +2615,44 @@ enum Order {
 
 **Mock Repository for testing:** Implement repository traits with `Arc<Mutex<Vec<T>>>` for in-memory test doubles. No external mocking library needed for simple cases.
 
+### Plan zero-copy view types at API design
+
+For data that is read by many call sites but mutated rarely, design a
+borrowed view type alongside the owned type. Decide at planning time which
+call sites take the owned type, which take the borrowed view, and which
+take an `Arc`/`Bytes`-style cheap-clone wrapper. Adding view types after
+the fact requires changing every call site that already standardized on
+the owned type.
+
+**Production exemplar — `bytes`** ([tokio-rs/bytes](https://github.com/tokio-rs/bytes/blob/master/src/bytes.rs)).
+Doc verbatim:
+
+> *"A cheaply cloneable and sliceable chunk of contiguous memory. `Bytes`
+> values facilitate zero-copy network programming by allowing multiple
+> `Bytes` objects to point to the same underlying memory. ... cheaply
+> cloneable and thereby shareable between an unlimited amount of
+> components, for example by modifying a reference count."*
+
+Cloning a `Bytes` increments a refcount; slicing produces a new `Bytes`
+referencing the same allocation. This is the foundation of every Rust
+HTTP client (hyper, reqwest), QUIC stack (quinn), and gRPC framework
+(tonic).
+
+**View-type lookup:**
+
+| Use case | Type |
+|---|---|
+| Read-only access, short-lived borrow | `&T` / `&[u8]` / `&str` |
+| Cheap-clone, shared, immutable | `Arc<T>` or `Bytes` |
+| Cheap-clone, sliceable, immutable | `Bytes` (network), `Arc<str>` (text) |
+| Borrowed-or-owned, copy on mutation | `Cow<'a, T>` |
+| Lifetime can't outlive borrow source (e.g. crosses thread) | `Arc<T>` |
+
+**When NOT to apply:** if every consumer mutates and the data is small
+(a few words), pass owned. View types pay back when (a) data is large,
+(b) most consumers read, and (c) at least one consumer keeps the data
+beyond a single function call.
+
 See [architecture-examples.md](architecture-examples.md#domain-modeling-patterns) for complete implementations.
 
 ## Resilience Patterns
@@ -2860,6 +2982,17 @@ This enables one crate name (`serde`) for users while splitting internals by cap
 
 When the set of implementations is known at compile time, use an enum instead of `dyn Trait`. This is faster (no vtable indirection), smaller (no heap allocation), and enables exhaustive matching.
 
+> **For state machines specifically**, prefer the **TypeState pattern**
+> when the transition graph is fully known at compile time — each state
+> becomes a different type, transitions consume `self` and return the
+> next type. The compiler refuses methods from the wrong state. See
+> [rust-implementing/type-system.md §"Type State Pattern"](../rust-implementing/type-system.md)
+> for the canonical shape and the `embedded-hal` GPIO mode-transition
+> exemplar. When TypeState is too rigid (modes picked at runtime), fall
+> back to the `Box<dyn State>` + `enum InputResult` "state-as-data"
+> shape documented in the same file.
+
+
 **ripgrep uses this for its core polymorphism:**
 
 ```rust
@@ -3000,6 +3133,66 @@ workspace = true
 - New crates get lints automatically
 - Easy to audit (`grep "workspace = true" crates/*/Cargo.toml`)
 - Can still override per-crate: `[lints.clippy]\nsome_lint = "allow"`
+
+## Modules Become Interfaces
+
+`lib.rs` and a curated `prelude` module define the crate's stable contract.
+Use `pub mod foo;` for public modules, `mod foo;` for implementation, and
+re-export the canonical types via `pub use` in either `lib.rs` or a
+dedicated `prelude.rs`. Internal file moves and refactors don't break
+consumers as long as those `pub use` names stay exported.
+
+This is the Rust answer to the Facade pattern at the crate level. Two
+prevailing shapes in the ecosystem:
+
+**Shape A — `pub use` in `lib.rs`** (axum, serde): every public item
+listed at the crate root.
+
+**Shape B — dedicated `prelude` module** (bevy, polars, iggy): consumers
+write `use cratename::prelude::*;` to pick up the canonical surface.
+
+**Production exemplar — Apache Iggy SDK** ([apache/iggy](https://github.com/apache/iggy/blob/master/core/sdk/src/lib.rs)):
+
+```rust
+// apache/iggy : core/sdk/src/lib.rs
+pub mod binary;
+pub mod client_provider;
+pub mod client_wrappers;
+pub mod clients;
+pub mod consumer_ext;
+pub mod http;
+mod leader_aware;        // <-- private — implementation detail
+pub mod prelude;
+pub mod quic;
+pub mod session;
+pub mod stream_builder;
+pub mod tcp;
+pub mod websocket;
+
+// apache/iggy : core/sdk/src/prelude.rs
+//! Re-exports the most common types, traits, and functions
+//! from the Iggy SDK to make them easier to import and use.
+pub use crate::client_provider::ClientProviderConfig;
+pub use crate::clients::client::IggyClient;
+pub use crate::clients::client_builder::IggyClientBuilder;
+pub use crate::clients::consumer::{IggyConsumer, ReceivedMessage};
+pub use crate::clients::producer::IggyProducer;
+/* ...~70 re-exports forming the curated public API */
+```
+
+**When to pick which shape:**
+
+| Crate scope | Pick |
+|---|---|
+| Small library with <20 public types | Shape A (`pub use` in `lib.rs`) |
+| Framework / batteries-included library | Shape B (dedicated `prelude.rs`) |
+| Crate with optional features that change the surface | Shape B (prelude can be `#[cfg]`-conditional) |
+
+**Anti-pattern:** marking everything `pub mod` to "make things accessible".
+That shape exposes internal module structure as part of the public API,
+which means an internal file rename or split is a breaking change. Default
+to `mod foo;`; promote to `pub mod foo;` only when consumers need to
+reference items by their nested path.
 
 ## Two-Stage Argument Parsing (ripgrep Pattern)
 

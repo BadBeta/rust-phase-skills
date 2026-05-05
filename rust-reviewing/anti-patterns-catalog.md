@@ -1,6 +1,397 @@
-# Rust Programming Skill — Production Code References
+# Rust Anti-Patterns Catalog
 
-> **Local only** — do NOT push to remote repo. Collects real-world evidence from major Rust codebases that validate (or challenge) the skill's recommendations.
+This file has two parts:
+
+- **Part A — Named Anti-Patterns to Flag in Review**: BAD/GOOD entries
+  for patterns Claude (and humans) commonly produce. Severity-classified.
+  Cite these in PR comments with the explicit anchor link.
+- **Part B — Validation Findings**: production-code audits of the
+  skill's rules against major crates (tokio, axum, hyper, ripgrep,
+  serde, etc.). The original purpose of this file. Useful when deciding
+  whether a rule needs softening or a "PREFER" caveat.
+
+> **Local only** — do NOT push to remote repo.
+
+---
+
+# Part A — Named Anti-Patterns to Flag in Review
+
+## OO-Mimicry Anti-Patterns
+
+These five anti-patterns are the most common attempts to write
+Java/C++/Python-style code in Rust. Each compiles (or nearly compiles)
+but produces designs that fight the language. The references point at
+the canonical guidance — Rust API Guidelines and rust-unofficial/patterns.
+
+### A1. `Deref` used to fake inheritance
+
+**Flag if you see**: `impl Deref for Outer { type Target = Inner; ... }`
+where `Inner` is *not* a smart-pointer pointee — i.e., `Outer` doesn't
+*contain a pointer to* `Inner`, it just wraps it for code reuse.
+
+**BAD**:
+
+```rust
+struct Logger { inner: ConnectionPool }
+impl Deref for Logger {
+    type Target = ConnectionPool;
+    fn deref(&self) -> &ConnectionPool { &self.inner }
+}
+// Caller writes logger.acquire(), surprised that all of ConnectionPool's
+// future API is also exposed on Logger.
+```
+
+**GOOD** — explicit forwarding:
+
+```rust
+impl Logger {
+    pub fn acquire(&self) -> Acquired<'_> {
+        // explicit method that decides what to expose
+        self.inner.acquire()
+    }
+}
+```
+
+**Why bad**:
+
+- `Deref` was designed for smart pointers (`Box`, `Rc`, `Arc`); using
+  it for code reuse violates the invariant readers assume.
+- Adding any method to `Inner` automatically adds it to `Outer`'s
+  public API with no compile-time review.
+- `self` semantics differ from OO inheritance — see references below.
+
+**Severity**: request-change. Rarely a correctness bug; always a
+maintenance bug.
+
+**References**:
+
+- [Rust API Guidelines, C-DEREF](https://rust-lang.github.io/api-guidelines/predictability.html):
+  *"Only smart pointers should implement `Deref` and `DerefMut`
+  traits, as the compiler's implicit rules for these traits are
+  specifically designed for smart pointer use cases."*
+- [rust-unofficial/patterns *Deref Polymorphism*](https://rust-unofficial.github.io/patterns/anti_patterns/deref.html):
+  *"This pattern does not introduce subtyping ... traits implemented
+  by `Foo` are not automatically implemented for `Bar`. Furthermore,
+  [it] interacts badly with bounds checking and thus generic
+  programming."*
+- [rust-clippy issue #2301](https://github.com/rust-lang/rust-clippy/issues/2301)
+  — open lint proposal acknowledging community consensus.
+
+### A2. Generic type used as a "base class" replacement
+
+**Flag if you see**: code attempting to put `Container<TypeA>` and
+`Container<TypeB>` into the same `Vec` or pass them through the same
+trait-object boundary.
+
+**BAD**:
+
+```rust
+struct Job<P: Plugin> { plugin: P }
+let jobs: Vec<Job<_>> = vec![Job::new(PluginA), Job::new(PluginB)];
+// E0308: expected `Job<PluginA>`, found `Job<PluginB>`
+```
+
+**GOOD** — enum (closed set) or `Box<dyn Trait>` (open set):
+
+```rust
+// Closed set: enum
+enum Job { A(JobA), B(JobB) }
+let jobs: Vec<Job> = vec![Job::A(JobA), Job::B(JobB)];
+
+// Open set: trait objects
+let jobs: Vec<Box<dyn Plugin>> = vec![Box::new(PluginA), Box::new(PluginB)];
+```
+
+**Why bad**: each `Container<T>` is a distinct concrete type via
+monomorphization. There is no runtime "generic Container" type. The
+attempt reveals an OO inheritance hierarchy mistakenly imported into
+Rust.
+
+**Severity**: request-change to redesign.
+
+**References**:
+
+- [Rust Reference, Generics](https://doc.rust-lang.org/reference/items/generics.html)
+  — monomorphization mechanics.
+- [rust-unofficial/patterns *Generics as Type Classes*](https://rust-unofficial.github.io/patterns/functional/generics-type-classes.html):
+  *"`Vec<isize>` and `Vec<char>` are two different types, which are
+  recognized as distinct by all parts of the type system."*
+
+### A3. Stringly-typed enum constructor
+
+**Flag if you see**: `fn new(kind: String, ...) -> Self { match kind.as_str() { ... } }`
+or any constructor where a string parameter selects one of several
+typed variants.
+
+**BAD**:
+
+```rust
+impl Operation {
+    pub fn new(kind: String, lhs: Operand, rhs: Operand) -> Self {
+        match kind.as_str() {
+            "add" => Self::Addition { lhs, rhs },
+            "sub" => Self::Addition { lhs, rhs },  // BUG: should be Subtraction
+            _ => panic!(),
+        }
+    }
+}
+```
+
+**GOOD** — typed constructors per variant or a typed `Kind` enum:
+
+```rust
+impl Operation {
+    pub fn add(lhs: Operand, rhs: Operand) -> Self { Self::Addition { lhs, rhs } }
+    pub fn sub(lhs: Operand, rhs: Operand) -> Self { Self::Subtraction { lhs, rhs } }
+}
+
+// Or typed Kind enum if the caller has the kind as data:
+pub enum OpKind { Add, Sub, Mul, Div }
+impl Operation {
+    pub fn new(kind: OpKind, lhs: Operand, rhs: Operand) -> Self {
+        match kind {
+            OpKind::Add => Self::Addition { lhs, rhs },
+            OpKind::Sub => Self::Subtraction { lhs, rhs },
+            /* compiler enforces exhaustive coverage */
+        }
+    }
+}
+```
+
+**Why bad**: trades compile-time variant checking for runtime string
+matching. Typos compile; logic bugs ship.
+
+**Severity**: request-change.
+
+**Reference**: [Rust API Guidelines, C-CUSTOM-TYPE](https://rust-lang.github.io/api-guidelines/type-safety.html)
+— *"Use a deliberate type (whether enum, struct, or tuple) to convey
+interpretation and invariants. `Widget::new(Small, Round)` is
+preferable to `Widget::new(true, false)` because custom types make
+intent explicit and support future expansion."*
+
+### A4. Sub-trait inheritance misconception
+
+**Flag if you see**: `trait B: A { ... }` with default methods, plus
+an `impl B for T` block that does NOT also `impl A for T`.
+
+**BAD**:
+
+```rust
+trait Animal { fn sound(&self) -> String; }
+trait Cat: Animal {
+    fn purr(&self) -> String { "purr".into() }
+    fn sound(&self) -> String { self.purr() }   // does NOT satisfy Animal::sound
+}
+impl Cat for Tabby { /* ... */ }
+// E0046: not all trait items implemented, missing: `sound`
+```
+
+**GOOD** — implement both traits separately:
+
+```rust
+impl Cat    for Tabby { fn purr(&self) -> String { "...".into() } }
+impl Animal for Tabby { fn sound(&self) -> String { self.purr() } }
+```
+
+**Why bad**: `trait B: A` is a *trait bound* meaning "B implementors
+must also implement A" — it does NOT mean B's default methods satisfy
+A's required methods. Each implementing type satisfies each trait
+independently.
+
+**Severity**: block (the code won't compile, so reviewer's job is to
+spot the intended design and propose the right shape).
+
+**Reference**: `rustc --explain E0046` and the [Rust Reference on traits](https://doc.rust-lang.org/reference/items/traits.html).
+
+### A5. Cross-domain mega-enum
+
+**Flag if you see**:
+
+```rust
+enum Operation {
+    Arithmetic(ArithmeticOp),
+    Text(TextOp),
+    Date(DateOp),
+}
+enum Operand {
+    NumericValue(f64),
+    StringValue(String),
+    InstantValue(Instant),
+}
+```
+
+A single enum tries to model multiple unrelated domains, with their
+operands also unified.
+
+**Why bad**: every dispatch site needs a 3-deep `match`. Type
+mismatches between operations and operands (passing `StringValue` to
+`Arithmetic::Add`) become runtime errors instead of compile errors.
+
+**GOOD** — separate modules (or crates) per domain:
+
+```rust
+mod arithmetic { pub enum Op { Add, Sub, /* ... */ } pub struct Operand(f64); }
+mod text       { pub enum Op { Concat, Substr, /* ... */ } pub struct Operand(String); }
+mod date       { pub enum Op { AddDays, SubDays, /* ... */ } pub struct Operand(Instant); }
+```
+
+Each domain's `Op` matches against its own `Operand`. Cross-domain
+operations are explicit conversions, not silent runtime errors.
+
+**Severity**: request-change. Reveals an OO inheritance hierarchy
+mistakenly modelled as nested enums.
+
+**References**:
+
+- [rust-unofficial/patterns *Prefer Small Crates*](https://rust-unofficial.github.io/patterns/patterns/structural/small-crates.html).
+- Production examples: `serde` keeps Serializer/Deserializer per
+  crate; `axum` separates request/response types per module — neither
+  has an `AnyRequestKind` mega-enum.
+
+---
+
+## Borrow-Checker-Fight Anti-Patterns
+
+Three patterns that paper over a borrow-checker conflict instead of
+fixing the underlying design. All three trade compile-time safety for
+runtime panics, hidden state, or undefined behavior.
+
+### A6. `RefCell` used to bypass `&mut self`
+
+**Flag if you see**: a struct field wrapped in `RefCell<T>` where the
+only methods that touch it are mutating methods that could just take
+`&mut self`, and there's no genuine reason for the `&self` interface
+(no foreign trait being implemented that requires `&self`, no shared
+ownership pattern, etc.).
+
+**BAD**:
+
+```rust
+pub struct Calculator {
+    history: RefCell<Vec<Calculation>>,
+}
+impl Calculator {
+    pub fn add(&self, expr: String, result: f64) {  // why &self?
+        self.history.borrow_mut().push(Calculation { expr, result });
+    }
+}
+```
+
+**GOOD**:
+
+```rust
+pub struct Calculator { history: Vec<Calculation> }
+impl Calculator {
+    pub fn add(&mut self, expr: String, result: f64) {
+        self.history.push(Calculation { expr, result });
+    }
+    pub fn view_history(&self) -> &[Calculation] { &self.history }
+}
+```
+
+**Why bad**: trades compile-time borrow checking for runtime
+`borrow_mut()` panics. `RefCell` is only justified when:
+
+1. You implement a trait whose method takes `&self` (Observer,
+   Decorator, `From`, etc.) AND you genuinely need to mutate.
+2. You need shared ownership in a single thread (`Rc<RefCell<...>>`)
+   for a genuine shared-state design.
+
+Outside those, redesign to `&mut self`.
+
+**Severity**: request-change.
+
+**Reference**: [rust-unofficial/patterns *Clone to satisfy the borrow checker*](https://rust-unofficial.github.io/patterns/anti_patterns/borrow_clone.html)
+groups this under the same umbrella anti-pattern: *"treat `.clone()` as
+a code smell warranting investigation"*. The same logic applies to
+`RefCell` — both are workarounds for ownership-thinking gaps.
+
+### A7. `*const T` / `&T` field pointing into an owned `Vec<T>`
+
+**Flag if you see**: a struct that owns a `Vec<T>` (or `String`,
+`BTreeMap`, or any growable container) AND has a field of type
+`*const T`, `*mut T`, `&T`, or `Option<&T>` referring to elements of
+that container. The safe-Rust version is rejected by the compiler as a
+self-referential struct; the `unsafe` version is undefined behavior on
+Vec reallocation.
+
+**Severity**: **block**. After any `.push()` / `.insert()` /
+`.extend()` that triggers reallocation, the pointer dangles. With
+`unsafe`, this is UB; with `&T`, the compiler will reject it but a
+determined coder may try `Pin` or `unsafe` to bypass.
+
+**Suggested fix**: store a `usize` index instead. See
+[refactor-templates.md "Pointer → index"](refactor-templates.md#pointer--index-escape-vec-reallocation-use-after-free)
+for the canonical refactor. For graph-shaped data, prefer
+[`slotmap`](https://github.com/orlp/slotmap), [`petgraph`](https://github.com/petgraph/petgraph),
+or [`generational-arena`](https://github.com/fitzgen/generational-arena).
+
+**References**:
+
+- `std::vec::Vec` documentation: *"Modifying the vector may cause its
+  buffer to be reallocated, which would also make any pointers to it
+  invalid."*
+- [Rust Reference, *Behavior considered undefined*](https://doc.rust-lang.org/reference/behavior-considered-undefined.html):
+  *"A reference/pointer is dangling if not all of the bytes it points
+  to are part of the same live allocation. ... is undefined behavior."*
+- [Miri](https://github.com/rust-lang/miri) detects "out-of-bounds
+  memory accesses and use-after-free", including Vec reallocation
+  invalidating pointers. `cargo +nightly miri test` is the canonical
+  detector.
+
+### A8. `lazy_static!` / `OnceLock<Mutex<T>>` global state to avoid threading state
+
+**Flag if you see**:
+
+```rust
+lazy_static! { static ref MEMORY: Mutex<Vec<f64>> = Mutex::new(Vec::new()); }
+struct Calculator;  // unit struct — all state is global
+```
+
+or:
+
+```rust
+static CONFIG: OnceLock<Mutex<UserPreferences>> = OnceLock::new();
+```
+
+— but only when used to *avoid threading state through call chains*.
+Legitimate uses (FFI handles, immutable config loaded once, true
+singletons like crypto state) get a pass.
+
+**Why bad**:
+
+1. Tests that depend on global state become non-deterministic when
+   `cargo test` runs them in parallel (Rust default).
+2. Lock scope is hard to reason about across functions; deadlocks
+   emerge under load.
+3. Hides dependencies — a function's signature no longer tells you
+   what state it touches.
+
+**GOOD**: own state on the relevant struct; pass `&` / `&mut`
+explicitly. If state must be shared at process scope (legitimate
+singleton case), use `Arc<T>` with explicit construction in `main()`
+and inject via constructor (rust-planning rule 14).
+
+**Migration note**: `lazy_static` is in maintenance mode. Prefer
+`std::sync::OnceLock` (stable since Rust 1.70) or
+`std::sync::LazyLock` (stable since Rust 1.80) for the legitimate
+cases. Production projects actively migrating in 2024–2026 (visible
+via `gh search code 'lazy_static!' 'OnceLock' --language Rust`)
+include `rustfs/rustfs`, `LGUG2Z/komorebi`, and `rustdesk/rustdesk` —
+all show files containing both the old `lazy_static!` form and the
+new `OnceLock<...>` form mid-migration.
+
+**Severity**: request-change unless the PR justifies the global with a
+specific reason.
+
+---
+
+# Part B — Validation Findings
+
+The remainder of this file is the validation log: production-code
+audits of the implementing skill's rules against major crates. Treat
+each row as evidence that informed the rule's wording, not as a
+flag-if-seen pattern.
 
 ## Verification Summary (2026-04-08)
 

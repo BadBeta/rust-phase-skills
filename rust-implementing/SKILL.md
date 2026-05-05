@@ -89,6 +89,9 @@ This SKILL.md carries the always-loaded decision tables, top anti-patterns, and 
 15. **PREFER `axum` for new web APIs** — Tower-native, maintained by tokio team (`tokio-rs/axum`), dominant ecosystem adoption (~4x actix-web downloads). Actix Web 4.0+ works under `#[tokio::main]`; `#[actix_web::main]` is only needed for actor support.
 16. **NEVER use `Rc<RefCell<T>>` in async code** — it is `!Send`. Use `Arc<Mutex<T>>` or `Arc<RwLock<T>>` in any code that crosses `.await` points or thread boundaries. `Rc<RefCell<T>>` is only for single-threaded, synchronous code (or `tokio::task::spawn_local`).
 17. **NEVER use `.clone()` to silence the borrow checker** without understanding why the borrow fails. Restructure ownership, use references, or scope borrows more tightly. Clone is appropriate for cheap-to-clone types (`Arc`, small structs) or when you genuinely need separate owned copies. Note: `.clone()` on `Arc` is idiomatic — the `Arc::clone(&x)` form is a style preference, not a requirement.
+
+17a. **PREFER thread-safety at a wrapper boundary, not threaded through core logic.** Build the core type with plain `&mut self` / `&self` methods. If the type also needs to be shared across threads, add a `ThreadSafeT { inner: Arc<Mutex<T>> }` (or `Arc<RwLock<T>>`) wrapper that locks once at each call. The core stays testable, debuggable, and free of synchronization noise; the wrapper is small, focused, and easy to audit. Production exemplar: `dashmap` (`xacrimon/dashmap`, ~80M downloads). Its external API is plain methods (`insert(&self, k, v)`, `get(&self, k)`); the sharded `RwLock` is hidden inside. Callers never write `Arc<Mutex<HashMap<…>>>` themselves — they get the safe wrapper instead.
+
 18. **ALWAYS handle `JoinHandle` results from `tokio::spawn`** — unwatched tasks that panic silently lose errors. Use `JoinSet`, store handles, or at minimum log spawn failures. Never fire-and-forget spawned tasks.
 19. **ALWAYS check the SSOT file before introducing a new `const` / `static` / magic literal at a code site.** Before you type `const TIMEOUT: Duration = Duration::from_secs(10);` in a business-logic module, grep the project for `policy.rs` / `config.rs` / `constants.rs` / `consts.rs` — if a name for this value already exists there, import it. If one doesn't but this value encodes a deliberate policy (timeout, retry count, cache size, protocol magic), add it THERE first and reference it here. Literals inline in business logic drift — the reviewing skill's SSOT litmus (*"if this fact changes, how many files do I have to update?"*) should answer 1, not N. The anti-slop `duration-magic-outside-policy` check fires post-write as a backstop; this rule is the proactive version.
 
@@ -144,6 +147,9 @@ Rust has many ways to express the same idea. Picking the idiomatic construct at 
 | Integer for indexing / length | `usize` | `u32`, `i32` (conversion bugs) |
 | Integer for hardware register | `u32`, `u64` (documented width) | `usize` (varies per arch) |
 | Money | `rust_decimal::Decimal` or custom newtype | `f64` |
+| Domain value with invariants (port range, non-empty, validated email, …) | Validated newtype with `T::new() -> Result<T, E>` (or `T::parse()`) | `validate(x: T) -> bool` then continue using raw `T`; same check at multiple call sites |
+| Wrap a type to add ergonomic methods | Explicit forwarding methods, OR newtype + `impl` block | `impl Deref for Wrapper { Target = Inner }` for code-reuse (Rust API Guidelines C-DEREF: only smart pointers should impl Deref) |
+| Constructor that picks a variant | Typed constructor per variant (`Op::add(...)`, `Op::sub(...)`) or typed `Kind` enum param | `fn new(kind: String, ...) { match kind.as_str() { "add" => ..., _ => panic!() } }` (stringly-typed) |
 
 ### Static vs dynamic dispatch
 
@@ -155,6 +161,7 @@ Rust has many ways to express the same idea. Picking the idiomatic construct at 
 | Public API of a library with one impl | `impl Trait` return type | Trait bound generic param (less ergonomic for users) |
 | Callback / closure parameter | `impl Fn(X) -> Y` | `Box<dyn Fn(X) -> Y>` unless storing |
 | Trait object safety concerns | Check object safety first; use `&dyn` / `Box<dyn>` if safe | Silent fallback to generics forces API change |
+| State-machine modes picked at runtime, transitions need to flow through holder | `enum InputResult { ChangeMode(Box<dyn State>), … }` — state's method is `&self`, returns the transition as data; holder applies it. See `type-system.md` §"State transitions returned as data" | `&mut self` on the state object trying to mutate the holder that owns it (borrow conflict, or `RefCell` workaround) |
 
 ### Concurrency primitive
 
@@ -175,6 +182,7 @@ Rust has many ways to express the same idea. Picking the idiomatic construct at 
 | Fire-and-forget async task | `JoinSet::new()` + `set.spawn(fut)` | `tokio::spawn(fut); /* drop handle */` |
 | Single long-lived background task | Store `JoinHandle` in your state, await on shutdown | Fire-and-forget |
 | Blocking I/O inside async | `tokio::task::spawn_blocking(\|\| sync_work())` | Direct blocking call (blocks runtime thread) |
+| Remember a position / identity in a growable container (`Vec`, `String`, `HashMap`) | `usize` index, `slotmap::Key`, `petgraph::NodeIndex` — see `language-patterns.md` §"Indices instead of pointers" | `*const T` / `&T` field referencing into the same struct's `Vec<T>` (use-after-free on reallocation, caught by Miri) |
 
 ### Async patterns
 
@@ -286,6 +294,56 @@ fn process(input: &str) -> Result<()> {
     Ok(())
 }
 ```
+
+The canonical shape of the pattern combines three pieces:
+
+1. **Validated newtypes** for each constrained primitive. Use std's
+   `NonZeroU32`, `NonZeroUsize`, etc. when applicable; otherwise wrap:
+
+   ```rust
+   #[derive(Debug, Clone, Copy)]
+   pub struct PositiveU32(u32);
+   impl PositiveU32 {
+       pub fn new(v: u32) -> Result<Self, ConfigError> {
+           if v > 0 { Ok(Self(v)) } else { Err(ConfigError::MustBePositive) }
+       }
+       pub fn get(self) -> u32 { self.0 }
+   }
+   ```
+
+2. **The `parse` (not `validate`) shape**: the type's only construction
+   path is a fallible parser returning `Result<Self, Error>`. There is no
+   `T::validate(&self) -> bool` method that returns a boolean. Once you
+   hold the type, it is valid by construction.
+
+3. **Builder for multi-field validation**: each setter wraps validation,
+   `build()` checks required fields and returns the validated type. See
+   [`type-system.md` §"TryFrom for Validated Types"](type-system.md) for
+   the canonical Builder + validated-newtype shape.
+
+**Production exemplars:**
+
+- [`dtolnay/semver`](https://github.com/dtolnay/semver/blob/master/src/parse.rs) —
+  `Version::parse(s) -> Result<Version, Error>`. There is no
+  `validate()` method anywhere in the crate. The `Version` struct's
+  `major`, `minor`, `patch` fields are guaranteed valid after parsing
+  succeeds. Used by Cargo and most Rust tooling.
+- [`tokio-rs/axum`](https://github.com/tokio-rs/axum/blob/main/axum/src/extract/mod.rs)
+  extractors — `Json<T>`, `Path<T>`, `Query<T>` implement `FromRequest`.
+  A handler signature `fn h(Json(t): Json<MyType>)` is type-level proof
+  that JSON parsing AND `MyType`'s deserialization validation succeeded
+  before the handler ran.
+- `std::num::NonZeroU32`, `NonZeroUsize`, `NonZeroI64`, etc. — the
+  standard library's built-in validated newtypes.
+- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/type-safety.html),
+  **C-NEWTYPE** and **C-CUSTOM-TYPE**: *"Use a deliberate type (whether
+  enum, struct, or tuple) to convey interpretation and invariants"* —
+  `Widget::new(Small, Round)` is preferable to `Widget::new(true, false)`.
+
+**Anti-pattern signal**: the same validation check appearing in multiple
+call sites. That is the moment to lift it into a constructor on a
+newtype. The reviewing skill has the post-hoc detector (§7.5 checklist
+bullet); this section is the proactive form.
 
 **Compiler as Collaborator** — When the borrow checker rejects your code, it's usually revealing a real problem (data race, use-after-free, aliased mutation). Restructure the code rather than fighting it. If you can't make it work, the design likely has a concurrency or ownership bug.
 

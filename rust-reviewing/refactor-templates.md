@@ -524,6 +524,162 @@ async fn run() {
 
 ---
 
+## Phase separation (escape `&self`/`&mut self` collisions)
+
+**Symptom**: borrow checker rejects with *"cannot borrow as immutable
+because it is also borrowed as mutable"* inside one method, and the
+tempting fix is `RefCell` to silence it.
+
+**Before**:
+
+```rust
+fn evaluate(&mut self, input: &str) -> Result<T, E> {
+    let intermediate = self.parse(input)?;
+    for x in &intermediate {
+        if needs_lookup(x) {
+            let found = self.lookup(x)?;          // &self
+            self.cache.insert(x.clone(), found);   // &mut self — CONFLICT
+        }
+    }
+    self.process(intermediate)
+}
+```
+
+**After** — gather the side-effect data in the immutable phase, apply
+in the mutable phase:
+
+```rust
+fn evaluate(&mut self, input: &str) -> Result<T, E> {
+    let intermediate = self.parse(input)?;
+    let mut to_cache = Vec::new();
+    let resolved: Vec<_> = intermediate.into_iter().map(|x| {
+        if needs_lookup(&x) {
+            let found = self.lookup(&x)?;
+            to_cache.push((x.clone(), found.clone()));
+            Ok(replaced_with(found))
+        } else { Ok(x) }
+    }).collect::<Result<_, _>>()?;                  // &self phase ends
+    for (k, v) in to_cache { self.cache.insert(k, v); }   // &mut self phase
+    self.process(resolved)
+}
+```
+
+Or split into two methods, one `&self`, one `&mut self`, with the
+holder calling them in sequence.
+
+**Production exemplar**: `rust-analyzer` enforces this at crate level —
+`hir-expand` (macro expansion) → `hir-def` (lowering + name resolution)
+→ `hir-ty` (type inference) are separate crates. See
+[rust-implementing/language-patterns.md §"Phase separation"](../rust-implementing/language-patterns.md)
+for the full pattern with citations.
+
+---
+
+## Heavy struct → independent Arc fields
+
+**Symptom**: methods that need to mutate two unrelated fields in
+parallel won't compile because `&mut self.a` and `&mut self.b` both
+implicitly hold `&mut self`. The struct is one borrow unit.
+
+**Before** — `publish_and_record` can't borrow `messages` and
+`metrics` mutably at the same time:
+
+```rust
+pub struct Broker {
+    messages: HashMap<String, Vec<Event>>,
+    metrics:  HashMap<String, u64>,
+    configs:  HashMap<String, Config>,
+}
+```
+
+**After** — each logically-independent field gets its own lock:
+
+```rust
+pub struct Broker {
+    storage: Arc<Mutex<Storage>>,
+    metrics: Arc<Metrics>,            // lock-free internally if possible
+    configs: Arc<RwLock<Configs>>,    // read-heavy
+}
+
+impl Broker {
+    pub fn publish_and_record(&self, msg: Message) -> Result<u64> {
+        let offset = self.storage.lock().unwrap().append(msg.clone())?;
+        self.metrics.record_message(msg.value.len());   // independent access
+        Ok(offset)
+    }
+}
+```
+
+**Lock primitive choice**:
+
+| Use | When |
+|---|---|
+| `std::sync::Mutex<T>` | Default. Any access (read or write) is exclusive. |
+| `parking_lot::Mutex<T>` | Existing dep; want unpoisoned locks; benchmarks show contention. |
+| `std::sync::RwLock<T>` | Reads dominate writes by ≥10× (config, route tables). |
+| `Atomic*` | Scalar-sized state. Lock-free but only for primitives. |
+| `dashmap::DashMap<K, V>` | Concurrent map — sharded internally. |
+
+**Reference**: [rust-unofficial/patterns *Compose Structs*](https://rust-unofficial.github.io/patterns/patterns/structural/compose-structs.html)
+— *"this design pattern lets you work around limitations in the borrow
+checker. And it often produces a better design."*
+
+**Production exemplar**: [Apache Iggy `ProducerCore`](https://github.com/apache/iggy/blob/master/core/sdk/src/clients/producer.rs)
+has ~24 fields, each individually wrapped — never a single
+`Mutex<Producer>` over the whole thing. See also rust-planning
+architecture-patterns.md §"Compose Structs for Independent Borrowing".
+
+**Trade-off**: a small heap allocation per `Arc`, plus lock
+acquisition cost. Worth it when independent borrowing is required;
+overkill when fields really must mutate together (one lock at the
+boundary is correct in that case).
+
+---
+
+## Pointer → index (escape Vec-reallocation use-after-free)
+
+**Symptom**: a struct owns a `Vec<T>` AND has a field of type
+`*const T`, `*mut T`, `&T`, or `Option<&T>` referring to elements of
+that `Vec`. Miri flags use-after-free; safe-Rust attempts hit
+self-referential-struct compile errors.
+
+**Before**:
+
+```rust
+struct History {
+    states: Vec<State>,
+    current: Option<*const State>,   // dangles after reallocation
+}
+```
+
+**After**:
+
+```rust
+struct History {
+    states: Vec<State>,
+    position: usize,                  // or Option<usize> if "no current" is meaningful
+}
+
+impl History {
+    fn current(&self) -> Option<&State> {
+        self.position.checked_sub(1).and_then(|i| self.states.get(i))
+    }
+}
+```
+
+For graph nodes, prefer the production crate alternatives:
+[`orlp/slotmap`](https://github.com/orlp/slotmap) (returns a `Key` on
+insert, key stays valid across reallocation),
+[`petgraph`](https://github.com/petgraph/petgraph) (`NodeIndex<Ix>`),
+or [`fitzgen/generational-arena`](https://github.com/fitzgen/generational-arena)
+(`Index { index, generation }` — guards against ABA).
+
+The `std::vec::Vec` documentation states the underlying invariant:
+*"Modifying the vector may cause its buffer to be reallocated, which
+would also make any pointers to it invalid."*
+
+---
+
 ## Related
 
 - [rust-reviewing/SKILL.md §11](SKILL.md#11-refactor-templates-tight-full-treatment-in-refactor-templatesmd) — compact version

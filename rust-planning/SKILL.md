@@ -45,6 +45,7 @@ This SKILL.md covers the always-loaded rules, planning workflow, master decision
 | [test-strategy.md](test-strategy.md) | **FIRST-CLASS**: test pyramid for Rust, mocking strategy (trait-first, mockall), property-based testing scope (proptest / quickcheck), fuzzing scope (cargo-fuzz / afl), snapshot testing (insta), loom model checking, compile-fail tests (trybuild), CI strategy, coverage goals, E2E strategy (cargo-nextest, assert_cmd, `axum-test` crate's `TestServer`), test as design driver | Planning test infrastructure; deciding testing investment per layer |
 | [distributed-rust.md](distributed-rust.md) | Multi-node patterns, gRPC (tonic) service contracts, HTTP service-to-service, message bus (Kafka/NATS), distributed consensus considerations, partition handling, idempotency across services | Designing multi-node / clustered / multi-region deployments |
 | [long-running-projects.md](long-running-projects.md) | Meta-workflow for projects spanning multiple sessions and milestones: the three-document model (`PLAN.md` / `continue.md` / commit messages), milestone-boundary checklist, SSOT invariant verification, pending-items pruning, cross-session handoff quality, hibernation preparation. | Starting/resuming a long-running project; writing `continue.md`; milestone commit discipline |
+| [gof-translation.md](gof-translation.md) | GoF design pattern → Rust translation table covering all 23 GoF patterns. Calls out the 5 patterns absent in idiomatic Rust (Singleton, Prototype, Flyweight, Proxy, classical Iterator-as-class) and what stdlib feature replaces each. References rust-unofficial/patterns and Rust API Guidelines. | Coming from another language and reaching for a known pattern; reviewing code that "smells like a GoF pattern"; deciding whether a GoF pattern fits Rust |
 
 **Cross-references:** subskills link to each other and to the other main skills' subskills (when they exist) via relative paths.
 
@@ -74,7 +75,11 @@ These rules consolidate 10 architectural principles + 17 decision rules + planni
 4. **ALWAYS design for replaceability.** Can you swap a component's implementation without changing business logic? If not, introduce a trait at the boundary. Can you test a business rule without a database, HTTP server, or external service? If not, the architecture has a boundary problem.
 5. **ALWAYS keep the composition root single.** `main()` (or a builder called from `main()`) creates concrete implementations, injects them into use cases, and starts the server. This is the only place that knows about all concrete types. No service discovers its own dependencies at runtime.
 6. **ALWAYS start without frameworks and add them at the edges.** Domain logic is plain Rust — no `#[derive(FromRow)]`, no `#[actix_web::get]`, no framework annotations. Framework-specific code lives in the outermost layer only. Litmus test: can you delete `infrastructure/` and `api/` and still compile `domain/` and `application/`?
-7. **ALWAYS translate errors at layer boundaries.** Each layer has its own error type. Domain errors are business-meaningful (`OrderNotModifiable`, `InsufficientFunds`). Infrastructure errors are technical (`ConnectionTimeout`, `RowNotFound`). `From` conversions translate between them at layer boundaries. Never surface infrastructure errors to callers.
+7. **ALWAYS translate errors at layer boundaries.** Each layer has its own error type. Domain errors are business-meaningful (`OrderNotModifiable`, `InsufficientFunds`). Infrastructure errors are technical (`ConnectionTimeout`, `RowNotFound`). `From` conversions translate between them at layer boundaries. Never surface infrastructure errors to callers. For the implementation shape of typed errors and the validated-newtype + Builder pattern, see [rust-implementing/SKILL.md §"Parse, Don't Validate"](../rust-implementing/SKILL.md).
+
+7a. **ALWAYS design unidirectional data flow first.** Sketch which component sends to which, and reject any design where the arrow returns to the sender. When acknowledgements or status are needed, model them as a *separate downward channel* (the broker writes acks to a separate topic / `oneshot` / `mpsc`), not as a back-reference. Back-edges in a Rust design surface later as `Arc<Mutex<…>>` proliferation, lifetime tangles, or runtime borrow panics. Production reference: `apache/iggy` separates `Producer`, `Broker` (server), and `Consumer` into three crates with strictly downward arrows; consumer offsets are written back via the broker's storage, not via a producer callback.
+
+7b. **ALWAYS contain mutability at planning time.** For each piece of mutable state, identify the single component that owns it. Other components request changes via methods, channels, or messages — they don't co-own. Avoiding this decision at planning time is the primary cause of `Arc<Mutex<…>>` proliferation later. Production reference: `xacrimon/dashmap` provides a thread-safe map by *encapsulating* sharded `RwLock`s inside the wrapper. Callers see plain methods; locks are an implementation detail.
 
 ### Project-layout and crate boundaries
 
@@ -84,6 +89,8 @@ These rules consolidate 10 architectural principles + 17 decision rules + planni
 11. **NEVER organize code into `models/`, `services/`, `helpers/` directories.** These are anti-patterns from other ecosystems. Rust uses crates (or modules in smaller apps) as boundary walls with `pub(crate)` for internal visibility.
 12. **NEVER expose domain entities directly as API responses.** Use separate DTOs (`CreateOrderRequest`, `OrderResponse`). Domain entities carry invariants and internal state that callers should not see or depend on.
 
+12a. **ALWAYS plan struct fields for independent borrowing.** Before defining a struct with three or more mutable fields, ask: do these fields ever need to be accessed independently? If yes, each independently-accessible field should be its own `Arc<Mutex<…>>` / `Arc<RwLock<…>>` / `Arc<Atomic*>` inside the struct, so methods can lock one without blocking the others. Production reference: `apache/iggy`'s `ProducerCore` (in `core/sdk/src/clients/producer.rs`) has ~24 fields, each individually wrapped — never a single `Mutex<Producer>` over the whole thing. See also rust-unofficial/patterns *Compose Structs* and architecture-patterns.md §"Compose Structs for Independent Borrowing".
+
 ### Dependency inversion and DI
 
 13. **ALWAYS define repository and gateway traits in the domain layer.** The domain owns the contract; infrastructure implements it. Never define a trait next to its implementation in infra.
@@ -91,6 +98,13 @@ These rules consolidate 10 architectural principles + 17 decision rules + planni
 15. **PREFER generics (`impl OrderRepository`) over trait objects (`Box<dyn OrderRepository>`)** when there is only one implementation per compilation target. Generics enable monomorphization and inlining. Use `dyn Trait` when you need heterogeneous collections or plugin architectures.
 16. **PREFER manual DI (constructor injection in `main()`) over DI containers** for applications with fewer than ~20 services. Containers add indirection without proportional benefit. Consider `shaku` or similar only when service graph complexity justifies it.
 17. **PREFER `Arc<T>` for sharing services across async tasks over `&'static T` globals.** `Arc` makes ownership explicit and enables testing with different instances.
+
+17a. **NEVER reach for `Rc`, `RefCell`, `Arc`, or `Mutex` reflexively.** Before adding any of them, answer all three:
+     1. Is shared ownership *required by the design* (multiple threads, plugin graph, true co-ownership) or am I avoiding ownership thinking?
+     2. Do I really need interior mutability, or can normal `&mut self` borrowing work after a small restructuring?
+     3. Could lifetimes, indices instead of pointers, or splitting work into phases (parse → resolve → evaluate) solve this?
+
+     The smart pointer is the *right* tool when (and only when) the data flow legitimately requires shared mutable state. Otherwise it papers over a design problem and trades compile-time errors for runtime panics. Reference: rust-unofficial/patterns, *Clone to satisfy the borrow checker* — the community-canonical statement of the umbrella anti-pattern.
 
 ### Error strategy
 

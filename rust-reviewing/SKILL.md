@@ -164,6 +164,11 @@ Mixing modes wastes time: full review on a bug report, ad-hoc debugging on a PR 
 - [ ] No `panic!` / `unreachable!` that should be `Result::Err`
 - [ ] `Cargo.toml` changes reviewed (new deps, feature bumps, MSRV changes)
 - [ ] No dependencies from the domain crate on infrastructure crates
+- [ ] No `Rc<RefCell<…>>` / `Arc<Mutex<…>>` introduced just to make the compiler stop complaining (vs. a genuine shared-mutable need). See [anti-patterns-catalog.md A6](anti-patterns-catalog.md#a6-refcell-used-to-bypass-mut-self).
+- [ ] No `RefCell<T>` field whose only callers could have used `&mut self` directly (anti-patterns-catalog A6).
+- [ ] No `lazy_static!` or `static …: Mutex<…>` introduced to avoid passing state through function signatures (anti-patterns-catalog A8).
+- [ ] No raw-pointer / `&T` field referencing into an owned `Vec` / `Box` / `String` that may be mutated later (anti-patterns-catalog A7).
+- [ ] No `match self.mode { … }` cascade in many methods where TypeState (compile-time) or the State pattern (runtime) would localize behavior per state — see `rust-implementing/type-system.md`.
 
 ---
 
@@ -261,6 +266,42 @@ When writing review comments, classify each finding. Block-severity findings pre
 
 **Budget your capital.** Over-flagging (lots of nitpicks) trains authors to ignore you. Reserve block/request-change for things that matter.
 
+### 6.5 Rust-native diagnostic prompts
+
+When a section of the diff "feels off" but you can't articulate why,
+work through these prompts. They're the questions experienced Rust
+reviewers run silently; making them explicit helps spot the right
+finding category.
+
+1. **Ownership clarity**: for each piece of mutable state, can I name
+   the single component that owns it? If two components co-mutate,
+   that's the finding.
+2. **Type-encoded invariants**: does this function defensively
+   re-validate data, or does the type signature already guarantee
+   validity? Same check appearing 3+ times = lift into a newtype.
+   ([Rust API Guidelines C-NEWTYPE / C-CUSTOM-TYPE](https://rust-lang.github.io/api-guidelines/type-safety.html).)
+3. **Trust the borrow checker**: did the author add `unsafe`,
+   `RefCell`, `Arc<Mutex<…>>`, or reflexive `.clone()` to silence a
+   borrow error? What's the underlying design issue? Each is a flag
+   if the answer is "to make it compile".
+   ([rust-unofficial/patterns *Clone to satisfy the borrow checker*](https://rust-unofficial.github.io/patterns/anti_patterns/borrow_clone.html).)
+4. **Composition over hierarchy**: is the code modelling an
+   inheritance tree (deep traits, `Box<dyn Trait>` everywhere) when
+   an enum + match would be smaller and cheaper? See anti-patterns
+   A1–A5.
+5. **Explicit errors**: does the function name, signature, and error
+   type tell me what can go wrong without reading the body?
+6. **Zero-cost abstraction**: is the code reaching for a manual loop
+   or primitive types because the author worried about iterator /
+   abstraction cost? Verify with `cargo asm` or `criterion` before
+   accepting the manual version — iterators are usually equivalent
+   or faster.
+
+These are not blocking checks — they're for naming the finding
+category before commenting. Once you've named it, look up the
+matching anti-pattern entry or §7.x checklist row and use that as
+the comment's anchor.
+
 ---
 
 ## 7. Review Checklists (by area)
@@ -284,6 +325,8 @@ When writing review comments, classify each finding. Block-severity findings pre
   - [ ] Trait defined once (in the domain/consuming crate), implementations elsewhere
   - [ ] Schema for each entity owned by exactly one module; other modules read via its public API
   - [ ] Error-variant set declared in one enum, not scattered constructors across modules
+- [ ] No struct with three or more mutable fields where independent borrowing was a known need at design time — fields should each be wrapped (`Arc<Mutex<…>>`, `Arc<RwLock<…>>`, `Atomic*`) so helpers can hold one lock without blocking siblings. See [rust-planning/architecture-patterns.md §"Compose Structs for Independent Borrowing"](../rust-planning/architecture-patterns.md) for the canonical shape (Apache Iggy `ProducerCore`).
+- [ ] Crate exposes a curated public API via `pub use` in `lib.rs` or a dedicated `prelude.rs` — internal modules use `mod foo;` not `pub mod foo;` for implementation details. See [rust-planning/architecture-patterns.md §"Modules Become Interfaces"](../rust-planning/architecture-patterns.md).
 
 ### 7.2 Ownership, lifetimes, borrowing
 
@@ -318,6 +361,8 @@ When writing review comments, classify each finding. Block-severity findings pre
 - [ ] Cancellation/shutdown handled (`select!` with `CancellationToken` or channel close)
 - [ ] No `.await` inside a hot loop that should be `rayon` parallel
 - [ ] No `async` functions that do no awaiting (just make them sync)
+- [ ] TypeState transition methods take `self` (consume), not `&mut self` — `&mut self` on a transition method that mutates a runtime `state` field is a runtime state machine wearing typestate clothing, defeating the pattern. See [rust-implementing/type-system.md §"The single most important TypeState rule"](../rust-implementing/type-system.md).
+- [ ] Thread-safety lives at a wrapper boundary, not threaded through every method's signature. If a type needs `Send + Sync`, it should be wrapped (`ThreadSafeT { inner: Arc<Mutex<T>> }`) once at the boundary; the core type stays single-threaded and testable. Production exemplar: `xacrimon/dashmap`. See rust-implementing/SKILL.md rule 17a.
 
 ### 7.5 Error handling
 
@@ -326,6 +371,7 @@ When writing review comments, classify each finding. Block-severity findings pre
 - [ ] Typed error enums with meaningful variants, `#[non_exhaustive]` if public
 - [ ] `From` conversions at layer boundaries (domain never surfaces `sqlx::Error`)
 - [ ] No `.unwrap()` / `.expect()` in production paths (tests/init OK)
+- [ ] **Same validation check appearing in multiple call sites** = signal to lift it into a constructor on a validated newtype (parse-don't-validate). See [rust-implementing/SKILL.md §"Parse, Don't Validate"](../rust-implementing/SKILL.md) and `type-system.md` §"Validated newtypes + Builder" for the canonical shape (semver, axum extractors, std::num::NonZero).
 - [ ] `anyhow::Context` / `.map_err` at crate boundaries for useful messages
 - [ ] `# Errors` docs section on public `Result`-returning functions
 - [ ] `panic!` / `unreachable!` only for true impossible states
@@ -377,6 +423,7 @@ When writing review comments, classify each finding. Block-severity findings pre
 - [ ] Authentication / authorization at the right layer (middleware, not handler)
 - [ ] `cargo-audit` run in CI; `cargo-deny` configured for supply chain
 - [ ] `unsafe` reviewed; Miri run
+- [ ] Append-only / unbounded-growth surfaces (event log, history buffer, in-memory queue, broadcast channel, audit trail) have an explicit capacity policy (TTL, eviction, backpressure, compaction) — not "we'll add it later". See [rust-planning/architecture-patterns.md §"Plan capacity policy for append-only stores"](../rust-planning/architecture-patterns.md).
 
 ### 7.10 Performance
 
@@ -395,6 +442,12 @@ When writing review comments, classify each finding. Block-severity findings pre
 ## 7b. Top BAD/GOOD Pairs — Flag-if-Seen Catalog
 
 Pairs drawn from [anti-patterns-catalog.md](anti-patterns-catalog.md), [debugging-playbook.md](debugging-playbook.md), [security-audit.md](security-audit.md), and [test-quality-review.md](test-quality-review.md), plus AI-specific tells (pairs 14–17) that tools don't catch. These are the highest-frequency review catches — kept in the hub so they fire during the validating-written-code reasoning step.
+
+> **OO-mimicry anti-patterns**: five additional flag-if-seen entries
+> covering `Deref`-as-inheritance, generics-as-base-class, stringly-typed
+> enum constructors, sub-trait misconception, and cross-domain mega-enum
+> live in [anti-patterns-catalog.md "Part A — Named Anti-Patterns"](anti-patterns-catalog.md#part-a--named-anti-patterns-to-flag-in-review).
+> Each cites the Rust API Guidelines or rust-unofficial/patterns.
 
 ### 1. `MutexGuard` held across `.await` (deadlock)
 
