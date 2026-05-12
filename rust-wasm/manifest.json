@@ -1,0 +1,152 @@
+{
+  "name": "rust-wasm",
+  "version": "1.0.0",
+  "description": "Comprehensive Rust WebAssembly skill with Phoenix LiveView, Tailwind CSS, and JavaScript interop",
+  "author": "Claude Code Skill Generator",
+  "created": "2025-12-31",
+  "keywords": [
+    "rust",
+    "webassembly",
+    "wasm",
+    "wasm-bindgen",
+    "leptos",
+    "yew",
+    "dioxus",
+    "sycamore",
+    "phoenix",
+    "liveview",
+    "tailwind",
+    "css",
+    "javascript",
+    "interop"
+  ],
+  "master_skill": "rust_wasm_skill.md",
+  "cheatsheet": "rust_wasm_cheatsheet.md",
+  "research_documents": [
+    {
+      "file": "rust_wasm_core.md",
+      "topic": "Core Concepts & Toolchain",
+      "triggers": ["project setup", "cargo.toml", "wasm-bindgen cli", "trunk", "wasm-opt"]
+    },
+    {
+      "file": "rust_wasm_frameworks.md",
+      "topic": "Frontend Frameworks",
+      "triggers": ["leptos", "yew", "dioxus", "sycamore", "signals", "components"]
+    },
+    {
+      "file": "rust_wasm_interop.md",
+      "topic": "JavaScript Interop",
+      "triggers": ["wasm-bindgen", "web-sys", "js-sys", "closures", "async", "fetch"]
+    },
+    {
+      "file": "rust_wasm_liveview.md",
+      "topic": "LiveView Integration",
+      "triggers": ["phoenix", "liveview", "hooks", "phx-update", "orb"]
+    },
+    {
+      "file": "rust_wasm_security.md",
+      "topic": "Security Practices",
+      "triggers": ["security", "memory safety", "csp", "validation", "supply chain"]
+    },
+    {
+      "file": "rust_wasm_performance.md",
+      "topic": "Performance & Optimization",
+      "triggers": ["performance", "optimization", "simd", "binary size", "profiling", "web workers"]
+    },
+    {
+      "file": "rust_wasm_testing.md",
+      "topic": "Testing & Debugging",
+      "triggers": ["testing", "debugging", "wasm-bindgen-test", "playwright", "source maps"]
+    },
+    {
+      "file": "rust_wasm_styling.md",
+      "topic": "CSS & Tailwind",
+      "triggers": ["css", "tailwind", "styling", "dark mode", "animations", "responsive"]
+    }
+  ],
+  "subskills": [
+    {
+      "file": "subskills/core.md",
+      "name": "core",
+      "description": "Toolchain and project setup essentials"
+    },
+    {
+      "file": "subskills/frameworks.md",
+      "name": "frameworks",
+      "description": "Leptos, Yew, Dioxus comparison"
+    },
+    {
+      "file": "subskills/interop.md",
+      "name": "interop",
+      "description": "JavaScript interop patterns"
+    },
+    {
+      "file": "subskills/liveview.md",
+      "name": "liveview",
+      "description": "Phoenix LiveView integration"
+    },
+    {
+      "file": "subskills/security.md",
+      "name": "security",
+      "description": "Security checklist and practices"
+    },
+    {
+      "file": "subskills/performance.md",
+      "name": "performance",
+      "description": "Optimization tips and profiling"
+    },
+    {
+      "file": "subskills/testing.md",
+      "name": "testing",
+      "description": "Testing commands and debugging"
+    },
+    {
+      "file": "subskills/styling.md",
+      "name": "styling",
+      "description": "Tailwind CSS setup and patterns"
+    }
+  ],
+  "examples": [
+    {
+      "file": "examples/minimal_leptos.rs",
+      "description": "Minimal Leptos WASM application"
+    },
+    {
+      "file": "examples/js_interop.rs",
+      "description": "JavaScript interop patterns with wasm-bindgen"
+    },
+    {
+      "file": "examples/async_fetch.rs",
+      "description": "Async operations and fetch API"
+    },
+    {
+      "file": "examples/image_processing.rs",
+      "description": "Performance-critical pixel manipulation"
+    },
+    {
+      "file": "examples/liveview_hook.js",
+      "description": "Complete Phoenix LiveView hook integration"
+    }
+  ],
+  "related_skills": [
+    "phoenix-liveview",
+    "tailwind",
+    "rust-nif",
+    "elixir"
+  ],
+  "versions": {
+    "rust": "1.75+",
+    "wasm-bindgen": "0.2.x",
+    "leptos": "0.7.x",
+    "yew": "0.21.x",
+    "dioxus": "0.5.x",
+    "trunk": "0.21.x",
+    "tailwind": "4.x"
+  },
+  "notes": [
+    "wasm-pack is archived as of January 2025 - use wasm-bindgen CLI directly",
+    "Leptos recommended for new projects in 2025",
+    "SIMD (128-bit) widely supported in browsers",
+    "WASI and Component Model production-ready"
+  ]
+}
